@@ -1,5 +1,17 @@
 package udf
 
+// ICBTag represents an ICB Tag (ECMA-167 Part 4 §14.6).
+// The structure is 20 bytes:
+//
+//	Offset  Size  Field
+//	0       4     PriorRecordedNumberOfDirectEntries
+//	4       2     StrategyType
+//	6       2     StrategyParameter
+//	8       2     MaximumNumberOfEntries
+//	10      1     Reserved
+//	11      1     FileType
+//	12      6     ParentICBLocation (lb_addr: 4-byte block + 2-byte partition)
+//	18      2     Flags
 type ICBTag struct {
 	PriorRecordedNumberOfDirectEntries uint32
 	StrategyType                       uint16
@@ -10,17 +22,20 @@ type ICBTag struct {
 	Flags                              uint16
 }
 
-func (itag *ICBTag) FromBytes(b []byte) *ICBTag {
-	itag.PriorRecordedNumberOfDirectEntries = rl_u32(b[0:])
-	itag.StrategyType = rl_u16(b[4:])
-	itag.StrategyParameter = rl_u16(b[4:])
-	itag.MaximumNumberOfEntries = rl_u16(b[8:])
-	itag.FileType = r_u8(b[1:])
-	itag.ParentICBLocation = rl_u48(b[12:])
-	itag.Flags = rl_u16(b[18:])
-	return itag
-}
-
+// NewICBTag parses an ICBTag from a byte slice.
+// Returns nil if the slice is too short.
 func NewICBTag(b []byte) *ICBTag {
-	return new(ICBTag).FromBytes(b)
+	if len(b) < 20 {
+		return nil
+	}
+
+	return &ICBTag{
+		PriorRecordedNumberOfDirectEntries: rlU32(b[0:]),
+		StrategyType:                       rlU16(b[4:]),
+		StrategyParameter:                  rlU16(b[6:]),
+		MaximumNumberOfEntries:             rlU16(b[8:]),
+		FileType:                           rU8(b[11:]),
+		ParentICBLocation:                  rlU48(b[12:]),
+		Flags:                              rlU16(b[18:]),
+	}
 }
