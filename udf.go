@@ -29,9 +29,17 @@ var (
 	ErrShortRead          = errors.New("short read")
 )
 
+// ErrNilReader is returned when a nil io.ReaderAt is passed to NewUdfFromReader.
+var ErrNilReader = errors.New("nil reader")
+
 // NewUdfFromReader creates a new Udf from an io.ReaderAt, parsing the image immediately.
 func NewUdfFromReader(r io.ReaderAt) (*Udf, error) {
+	if r == nil {
+		return nil, ErrNilReader
+	}
+
 	u := &Udf{r: r}
+
 	err := u.init()
 	if err != nil {
 		return nil, err

@@ -350,7 +350,7 @@ func newFileIdentifierDescriptor(b []byte) (*FileIdentifierDescriptor, error) {
 	fid.ICB = NewExtentLong(b[20:])
 	fid.LengthOfImplementationUse = rlU16(b[36:])
 
-	if len(b) >= 70 {
+	if fid.LengthOfImplementationUse >= 32 && len(b) >= 38+32 {
 		fid.ImplementationUse = NewEntityID(b[38:])
 	}
 

@@ -84,7 +84,9 @@ func (f *File) Name() string {
 func (f *File) Mode() os.FileMode {
 	fe, err := f.FileEntry()
 	if err != nil {
-		if f.IsDir() {
+		// FileEntry failed; use FileCharacteristics bit 1 for directory check
+		// instead of IsDir() which would call FileEntry() again and fail.
+		if f.Fid != nil && f.Fid.FileCharacteristics&0x02 != 0 {
 			return os.ModeDir | 0o755
 		}
 
