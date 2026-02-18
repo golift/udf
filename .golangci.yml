@@ -1,0 +1,56 @@
+version: '2'
+linters:
+  default: all
+  disable:
+    # unused
+    - nlreturn
+    - exhaustruct
+    - depguard
+    - nonamedreturns
+    - forbidigo
+    - wsl
+    # too noisy for a binary format parser
+    - mnd
+    - varnamelen
+  exclusions:
+    rules:
+      - linters:
+          - funlen
+          - goconst
+          - wsl
+          - errcheck
+        path: .+_test.go
+
+  settings:
+    gosec:
+      excludes:
+        - G304
+        - G115
+        - G602
+        - G705
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - whyNoLint
+        - commentedOutCode
+      settings:
+        unnamedResult:
+          checkExported: true
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+      disable-default-exclusions: false
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  fix: true
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports

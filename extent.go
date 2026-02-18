@@ -1,37 +1,39 @@
 package udf
 
+// Extent is an 8-byte short allocation descriptor.
 type Extent struct {
 	Length   uint32
 	Location uint32
 }
 
+// NewExtent parses an Extent from a byte slice.
+// Returns a zero Extent if the slice is too short.
 func NewExtent(b []byte) Extent {
+	if len(b) < 8 {
+		return Extent{}
+	}
+
 	return Extent{
-		Length:   rl_u32(b[0:]),
-		Location: rl_u32(b[4:]),
+		Length:   rlU32(b[0:]),
+		Location: rlU32(b[4:]),
 	}
 }
 
-type ExtentSmall struct {
-	Length   uint16
-	Location uint64
-}
-
-func NewExtentSmall(b []byte) ExtentSmall {
-	return ExtentSmall{
-		Length:   rl_u16(b[0:]),
-		Location: rl_u48(b[2:]),
-	}
-}
-
+// ExtentLong is a 16-byte long allocation descriptor.
 type ExtentLong struct {
 	Length   uint32
 	Location uint64
 }
 
+// NewExtentLong parses an ExtentLong from a byte slice.
+// Returns a zero ExtentLong if the slice is too short.
 func NewExtentLong(b []byte) ExtentLong {
+	if len(b) < 10 {
+		return ExtentLong{}
+	}
+
 	return ExtentLong{
-		Length:   rl_u32(b[0:]),
-		Location: rl_u48(b[4:]),
+		Length:   rlU32(b[0:]),
+		Location: rlU48(b[4:]),
 	}
 }

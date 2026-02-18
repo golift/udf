@@ -9,91 +9,72 @@ import (
 	"golang.org/x/text/transform"
 )
 
-func r_u8(b []byte) uint8 {
+func rU8(b []byte) uint8 {
 	return b[0]
 }
 
-func r_i8(b []byte) int8 {
-	return int8(r_u8(b))
-}
+func rlU64(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
+func rlU32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
+func rlU16(b []byte) uint16 { return binary.LittleEndian.Uint16(b) }
 
-var rl_u64 = binary.LittleEndian.Uint64
-
-func rl_u48(b []byte) uint64 {
+func rlU48(b []byte) uint64 {
 	var buf [8]byte
 	copy(buf[:], b[:6])
-	return rl_u64(buf[:])
+
+	return rlU64(buf[:])
 }
 
-var rl_u32 = binary.LittleEndian.Uint32
-var rl_u16 = binary.LittleEndian.Uint16
-
-func rl_i64(b []byte) int64 {
-	return int64(rl_u64(b))
-}
-
-func rl_i32(b []byte) int32 {
-	return int32(rl_u32(b))
-}
-
-func rl_i16(b []byte) int16 {
-	return int16(rl_u16(b))
-}
-
-var rb_u64 = binary.BigEndian.Uint64
-var rb_u32 = binary.BigEndian.Uint32
-var rb_u16 = binary.BigEndian.Uint16
-
-func rb_u8(b []byte) uint8 {
-	return b[0]
-}
-
-func rb_i64(b []byte) int64 {
-	return int64(rb_u64(b))
-}
-
-func rb_i32(b []byte) int32 {
-	return int32(rb_u32(b))
-}
-
-func rb_i16(b []byte) int16 {
-	return int16(rb_u16(b))
-}
-
-func r_dstring(b []byte, fieldlen int) string {
+func rDstring(b []byte, fieldlen int) string {
 	if fieldlen == 0 {
 		return ""
 	}
-	return string(b[:b[fieldlen-1]])
+
+	length := min(int(b[fieldlen-1]), fieldlen-1)
+
+	if length == 0 {
+		return ""
+	}
+
+	return string(b[:length])
 }
 
-func r_dcharacters(b []byte) string {
+func rDcharacters(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
+
 	switch b[0] {
 	case 8:
 		s, _, err := transform.Bytes(charmap.Windows1252.NewDecoder(), b[1:])
 		if err != nil {
-			panic(err)
+			return ""
 		}
+
 		return string(s)
 	case 16:
 		s, _, err := transform.Bytes(unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM).NewDecoder(), b[1:])
 		if err != nil {
-			panic(err)
+			return ""
 		}
+
 		return string(s)
 	default:
 		return ""
 	}
 }
 
-func r_timestamp(b []byte) time.Time {
-	var t time.Time
-	t = t.AddDate(int(rl_u16(b[2:])), int(b[4]), int(b[5]))
-	t.Add(time.Duration(b[6])*time.Hour +
-		time.Duration(b[7])*time.Minute +
-		time.Duration(b[8])*time.Second)
-	return t
+func rTimestamp(b []byte) time.Time {
+	if len(b) < 12 {
+		return time.Time{}
+	}
+
+	year := int(rlU16(b[2:]))
+	month := time.Month(b[4])
+	day := int(b[5])
+	hour := int(b[6])
+	minute := int(b[7])
+	second := int(b[8])
+
+	// UDF timestamps store absolute year, month, day.
+	return time.Date(year, month, day, hour, minute, second, 0, time.UTC)
 }

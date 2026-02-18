@@ -1,37 +1,47 @@
-## Udf filesystem golang library
-- Non-optimized
-- Some functioal is broken
-- `recovery()` style error handling interface
-- Work only with certain iso's
+# `udf`
 
-It's all because I has reached requried functional for me.
+Go Library for reading UDF (Universal Disc Format) filesystem images.
 
-## Example
-```go
+-   [GoDoc](https://pkg.go.dev/golift.io/udf)
+-   Works on Linux, Windows, FreeBSD and macOS **without Cgo**.
+-   Parses UDF volume structures per ECMA-167.
+-   Returns errors instead of panicking.
+
+Forked from [mogaika/udf](https://github.com/mogaika/udf) with bug fixes,
+error handling, and modernization.
+
+# Example
+
+```golang
 package main
 
 import (
 	"fmt"
+	"log"
 	"os"
-	"github.com/mogaika/udf"
+
+	"golift.io/udf"
 )
 
 func main() {
-	r, _ := os.Open("example.iso")
-	u := udf.NewUdfFromReader(r)
-	for _, f := range u.ReadDir(nil) {
+	r, err := os.Open("example.iso")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer r.Close()
+
+	u, err := udf.NewUdfFromReader(r)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	files, err := u.ReadDir(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, f := range files {
 		fmt.Printf("%s %-10d %-20s %v\n", f.Mode().String(), f.Size(), f.Name(), f.ModTime())
 	}
 }
 ```
-Output:
-```
--r-xr-xr-x 57         system.cnf           2006-02-11 00:00:00 +0000 UTC
--r-xr-xr-x 1911580    SCUS_973.99          2006-03-15 00:00:00 +0000 UTC
--r-xr-xr-x 278305     ioprp300.img         2005-11-14 00:00:00 +0000 UTC
--r-xr-xr-x 6641       sio2man.irx          2005-10-18 00:00:00 +0000 UTC
--r-xr-xr-x 15653      dbcman.irx           2005-10-18 00:00:00 +0000 UTC
-```
-
-
-

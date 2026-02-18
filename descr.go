@@ -1,26 +1,27 @@
 package udf
 
 import (
+	"errors"
+	"fmt"
 	"time"
 )
 
+// Descriptor tag identifiers per ECMA-167.
 const (
-	DESCRIPTOR_PRIMARY_VOLUME            = 0x1
-	DESCRIPTOR_ANCHOR_VOLUME_POINTER     = 0x2
-	DESCRIPTOR_VOLUME_POINTER            = 0x3
-	DESCRIPTOR_IMPLEMENTATION_USE_VOLUME = 0x4
-	DESCRIPTOR_PARTITION                 = 0x5
-	DESCRIPTOR_LOGICAL_VOLUME            = 0x6
-	DESCRIPTOR_UNALLOCATED               = 0x7
-	DESCRIPTOR_TERMINATING               = 0x8
-	DESCRIPTOR_FILE_SET                  = 0x100
-	DESCRIPTOR_IDENTIFIER                = 0x101
-	DESCRIPTOR_ALLOCATION_EXTENT         = 0x102
-	DESCRIPTOR_INDIRECT_ENTRY            = 0x103
-	DESCRIPTOR_TERMINAL_ENTRY            = 0x104
-	DESCRIPTOR_FILE_ENTRY                = 0x105
+	descriptorPrimaryVolume       = 0x1
+	descriptorAnchorVolumePointer = 0x2
+	descriptorPartition           = 0x5
+	descriptorLogicalVolume       = 0x6
+	descriptorTerminating         = 0x8
+	descriptorFileSet             = 0x100
+	descriptorFileIdentifier      = 0x101
+	descriptorFileEntry           = 0x105
 )
 
+// ErrBufferTooShort is returned when a byte slice is too short for parsing.
+var ErrBufferTooShort = errors.New("buffer too short")
+
+// Descriptor is a UDF descriptor tag (ECMA-167 §7.2).
 type Descriptor struct {
 	TagIdentifier       uint16
 	DescriptorVersion   uint16
@@ -32,49 +33,72 @@ type Descriptor struct {
 	data                []byte
 }
 
+// Data returns a copy of the descriptor payload (after the 16-byte tag).
 func (d *Descriptor) Data() []byte {
-	buf := make([]byte, len(d.data))
+	if len(d.data) <= 16 {
+		return nil
+	}
+
+	buf := make([]byte, len(d.data)-16)
 	copy(buf, d.data[16:])
+
 	return buf
 }
 
-func (d *Descriptor) FromBytes(b []byte) *Descriptor {
-	d.TagIdentifier = rl_u16(b[0:])
-	d.DescriptorVersion = rl_u16(b[2:])
-	d.TagChecksum = r_u8(b[3:])
-	d.TagSerialNumber = rl_u16(b[6:])
-	d.DescriptorCRC = rl_u16(b[8:])
-	d.DescriptorCRCLength = rl_u16(b[10:])
-	d.TagLocation = rl_u32(b[12:])
-	d.data = b[:]
-	return d
+func (d *Descriptor) fromBytes(b []byte) error {
+	if len(b) < 16 {
+		return fmt.Errorf("descriptor tag: %w", ErrBufferTooShort)
+	}
+
+	d.TagIdentifier = rlU16(b[0:])
+	d.DescriptorVersion = rlU16(b[2:])
+	d.TagChecksum = rU8(b[4:])
+	d.TagSerialNumber = rlU16(b[6:])
+	d.DescriptorCRC = rlU16(b[8:])
+	d.DescriptorCRCLength = rlU16(b[10:])
+	d.TagLocation = rlU32(b[12:])
+	d.data = b
+
+	return nil
 }
 
-func NewDescriptor(b []byte) *Descriptor {
-	return new(Descriptor).FromBytes(b)
+func newDescriptor(b []byte) (*Descriptor, error) {
+	d := &Descriptor{}
+
+	err := d.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	return d, nil
 }
 
+// AnchorVolumeDescriptorPointer is ECMA-167 §10.2.
 type AnchorVolumeDescriptorPointer struct {
 	Descriptor                 Descriptor
 	MainVolumeDescriptorSeq    Extent
 	ReserveVolumeDescriptorSeq Extent
 }
 
-func (ad *AnchorVolumeDescriptorPointer) FromBytes(b []byte) *AnchorVolumeDescriptorPointer {
-	ad.Descriptor.FromBytes(b)
+func newAnchorVolumeDescriptorPointer(b []byte) (*AnchorVolumeDescriptorPointer, error) {
+	if len(b) < 32 {
+		return nil, fmt.Errorf("anchor volume descriptor: %w", ErrBufferTooShort)
+	}
+
+	ad := &AnchorVolumeDescriptorPointer{}
+
+	err := ad.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
 	ad.MainVolumeDescriptorSeq = NewExtent(b[16:])
 	ad.ReserveVolumeDescriptorSeq = NewExtent(b[24:])
-	return ad
+
+	return ad, nil
 }
 
-func NewAnchorVolumeDescriptorPointer(b []byte) *AnchorVolumeDescriptorPointer {
-	return new(AnchorVolumeDescriptorPointer).FromBytes(b)
-}
-
-func (d *Descriptor) AnchorVolumeDescriptorPointer() *AnchorVolumeDescriptorPointer {
-	return NewAnchorVolumeDescriptorPointer(d.data)
-}
-
+// PrimaryVolumeDescriptor is ECMA-167 §10.1.
 type PrimaryVolumeDescriptor struct {
 	Descriptor                                  Descriptor
 	VolumeDescriptorSequenceNumber              uint32
@@ -97,37 +121,41 @@ type PrimaryVolumeDescriptor struct {
 	Flags                                       uint16
 }
 
-func (pvd *PrimaryVolumeDescriptor) FromBytes(b []byte) *PrimaryVolumeDescriptor {
-	pvd.Descriptor.FromBytes(b)
-	pvd.VolumeDescriptorSequenceNumber = rl_u32(b[16:])
-	pvd.PrimaryVolumeDescriptorNumber = rl_u32(b[20:])
-	pvd.VolumeIdentifier = r_dstring(b[24:], 32)
-	pvd.VolumeSequenceNumber = rl_u16(b[56:])
-	pvd.MaximumVolumeSequenceNumber = rl_u16(b[58:])
-	pvd.InterchangeLevel = rl_u16(b[60:])
-	pvd.MaximumInterchangeLevel = rl_u16(b[62:])
-	pvd.CharacterSetList = rl_u32(b[64:])
-	pvd.MaximumCharacterSetList = rl_u32(b[68:])
-	pvd.VolumeSetIdentifier = r_dstring(b[72:], 128)
+func newPrimaryVolumeDescriptor(b []byte) (*PrimaryVolumeDescriptor, error) {
+	if len(b) < 490 {
+		return nil, fmt.Errorf("primary volume descriptor: %w", ErrBufferTooShort)
+	}
+
+	pvd := &PrimaryVolumeDescriptor{}
+
+	err := pvd.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	pvd.VolumeDescriptorSequenceNumber = rlU32(b[16:])
+	pvd.PrimaryVolumeDescriptorNumber = rlU32(b[20:])
+	pvd.VolumeIdentifier = rDstring(b[24:], 32)
+	pvd.VolumeSequenceNumber = rlU16(b[56:])
+	pvd.MaximumVolumeSequenceNumber = rlU16(b[58:])
+	pvd.InterchangeLevel = rlU16(b[60:])
+	pvd.MaximumInterchangeLevel = rlU16(b[62:])
+	pvd.CharacterSetList = rlU32(b[64:])
+	pvd.MaximumCharacterSetList = rlU32(b[68:])
+	pvd.VolumeSetIdentifier = rDstring(b[72:], 128)
 	pvd.VolumeAbstract = NewExtent(b[328:])
 	pvd.VolumeCopyrightNoticeExtent = NewExtent(b[336:])
 	pvd.ApplicationIdentifier = NewEntityID(b[344:])
-	pvd.RecordingDateTime = r_timestamp(b[376:])
+	pvd.RecordingDateTime = rTimestamp(b[376:])
 	pvd.ImplementationIdentifier = NewEntityID(b[388:])
 	pvd.ImplementationUse = b[420:484]
-	pvd.PredecessorVolumeDescriptorSequenceLocation = rl_u32(b[484:])
-	pvd.Flags = rl_u16(b[488:])
-	return pvd
+	pvd.PredecessorVolumeDescriptorSequenceLocation = rlU32(b[484:])
+	pvd.Flags = rlU16(b[488:])
+
+	return pvd, nil
 }
 
-func NewPrimaryVolumeDescriptor(b []byte) *PrimaryVolumeDescriptor {
-	return new(PrimaryVolumeDescriptor).FromBytes(b)
-}
-
-func (d *Descriptor) PrimaryVolumeDescriptor() *PrimaryVolumeDescriptor {
-	return NewPrimaryVolumeDescriptor(d.data)
-}
-
+// PartitionDescriptor is ECMA-167 §10.5.
 type PartitionDescriptor struct {
 	Descriptor                     Descriptor
 	VolumeDescriptorSequenceNumber uint32
@@ -142,29 +170,33 @@ type PartitionDescriptor struct {
 	ImplementationUse              []byte
 }
 
-func (pd *PartitionDescriptor) FromBytes(b []byte) *PartitionDescriptor {
-	pd.Descriptor.FromBytes(b)
-	pd.VolumeDescriptorSequenceNumber = rl_u32(b[16:])
-	pd.PartitionFlags = rl_u16(b[20:])
-	pd.PartitionNumber = rl_u16(b[22:])
+func newPartitionDescriptor(b []byte) (*PartitionDescriptor, error) {
+	if len(b) < 356 {
+		return nil, fmt.Errorf("partition descriptor: %w", ErrBufferTooShort)
+	}
+
+	pd := &PartitionDescriptor{}
+
+	err := pd.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	pd.VolumeDescriptorSequenceNumber = rlU32(b[16:])
+	pd.PartitionFlags = rlU16(b[20:])
+	pd.PartitionNumber = rlU16(b[22:])
 	pd.PartitionContents = NewEntityID(b[24:])
 	pd.PartitionContentsUse = b[56:184]
-	pd.AccessType = rl_u32(b[184:])
-	pd.PartitionStartingLocation = rl_u32(b[188:])
-	pd.PartitionLength = rl_u32(b[192:])
+	pd.AccessType = rlU32(b[184:])
+	pd.PartitionStartingLocation = rlU32(b[188:])
+	pd.PartitionLength = rlU32(b[192:])
 	pd.ImplementationIdentifier = NewEntityID(b[196:])
 	pd.ImplementationUse = b[228:356]
-	return pd
+
+	return pd, nil
 }
 
-func NewPartitionDescriptor(b []byte) *PartitionDescriptor {
-	return new(PartitionDescriptor).FromBytes(b)
-}
-
-func (d *Descriptor) PartitionDescriptor() *PartitionDescriptor {
-	return NewPartitionDescriptor(d.data)
-}
-
+// PartitionMap is ECMA-167 §10.7 Type 1 Partition Map.
 type PartitionMap struct {
 	PartitionMapType     uint8
 	PartitionMapLength   uint8
@@ -172,14 +204,18 @@ type PartitionMap struct {
 	PartitionNumber      uint16
 }
 
-func (pm *PartitionMap) FromBytes(b []byte) *PartitionMap {
-	pm.PartitionMapType = rb_u8(b[0:])
-	pm.PartitionMapLength = rb_u8(b[1:])
-	pm.VolumeSequenceNumber = rb_u16(b[2:])
-	pm.PartitionNumber = rb_u16(b[4:])
-	return pm
+func (pm *PartitionMap) fromBytes(b []byte) {
+	if len(b) < 6 {
+		return
+	}
+	// UDF is little-endian; the original code used big-endian here by mistake.
+	pm.PartitionMapType = rU8(b[0:])
+	pm.PartitionMapLength = rU8(b[1:])
+	pm.VolumeSequenceNumber = rlU16(b[2:])
+	pm.PartitionNumber = rlU16(b[4:])
 }
 
+// LogicalVolumeDescriptor is ECMA-167 §10.6.
 type LogicalVolumeDescriptor struct {
 	Descriptor                     Descriptor
 	VolumeDescriptorSequenceNumber uint32
@@ -195,33 +231,41 @@ type LogicalVolumeDescriptor struct {
 	PartitionMaps                  []PartitionMap
 }
 
-func (lvd *LogicalVolumeDescriptor) FromBytes(b []byte) *LogicalVolumeDescriptor {
-	lvd.Descriptor.FromBytes(b)
-	lvd.VolumeDescriptorSequenceNumber = rl_u32(b[16:])
-	lvd.LogicalVolumeIdentifier = r_dstring(b[84:], 128)
-	lvd.LogicalBlockSize = rl_u32(b[212:])
+func newLogicalVolumeDescriptor(b []byte) (*LogicalVolumeDescriptor, error) {
+	if len(b) < 440 {
+		return nil, fmt.Errorf("logical volume descriptor: %w", ErrBufferTooShort)
+	}
+
+	lvd := &LogicalVolumeDescriptor{}
+
+	err := lvd.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	lvd.VolumeDescriptorSequenceNumber = rlU32(b[16:])
+	lvd.LogicalVolumeIdentifier = rDstring(b[84:], 128)
+	lvd.LogicalBlockSize = rlU32(b[212:])
 	lvd.DomainIdentifier = NewEntityID(b[216:])
 	lvd.LogicalVolumeContentsUse = NewExtentLong(b[248:])
-	lvd.MapTableLength = rl_u32(b[264:])
-	lvd.NumberOfPartitionMaps = rl_u32(b[268:])
+	lvd.MapTableLength = rlU32(b[264:])
+	lvd.NumberOfPartitionMaps = rlU32(b[268:])
 	lvd.ImplementationIdentifier = NewEntityID(b[272:])
 	lvd.ImplementationUse = b[304:432]
 	lvd.IntegritySequenceExtent = NewExtent(b[432:])
+
 	lvd.PartitionMaps = make([]PartitionMap, lvd.NumberOfPartitionMaps)
 	for i := range lvd.PartitionMaps {
-		lvd.PartitionMaps[i].FromBytes(b[440+i*6:])
+		offset := 440 + i*6
+		if offset+6 <= len(b) {
+			lvd.PartitionMaps[i].fromBytes(b[offset:])
+		}
 	}
-	return lvd
+
+	return lvd, nil
 }
 
-func NewLogicalVolumeDescriptor(b []byte) *LogicalVolumeDescriptor {
-	return new(LogicalVolumeDescriptor).FromBytes(b)
-}
-
-func (d *Descriptor) LogicalVolumeDescriptor() *LogicalVolumeDescriptor {
-	return NewLogicalVolumeDescriptor(d.data)
-}
-
+// FileSetDescriptor is ECMA-167 §14.1.
 type FileSetDescriptor struct {
 	Descriptor              Descriptor
 	RecordingDateTime       time.Time
@@ -237,36 +281,40 @@ type FileSetDescriptor struct {
 	AbstractFileIdentifier  string
 	RootDirectoryICB        ExtentLong
 	DomainIdentifier        EntityID
-	NexExtent               ExtentLong
+	NextExtent              ExtentLong
 }
 
-func (fsd *FileSetDescriptor) FromBytes(b []byte) *FileSetDescriptor {
-	fsd.Descriptor.FromBytes(b)
-	fsd.RecordingDateTime = r_timestamp(b[16:])
-	fsd.InterchangeLevel = rl_u16(b[28:])
-	fsd.MaximumInterchangeLevel = rl_u16(b[30:])
-	fsd.CharacterSetList = rl_u32(b[32:])
-	fsd.MaximumCharacterSetList = rl_u32(b[36:])
-	fsd.FileSetNumber = rl_u32(b[40:])
-	fsd.FileSetDescriptorNumber = rl_u32(b[44:])
-	fsd.LogicalVolumeIdentifier = r_dstring(b[112:], 128)
-	fsd.FileSetIdentifier = r_dstring(b[304:], 32)
-	fsd.CopyrightFileIdentifier = r_dstring(b[336:], 32)
-	fsd.AbstractFileIdentifier = r_dstring(b[368:], 32)
+func newFileSetDescriptor(b []byte) (*FileSetDescriptor, error) {
+	if len(b) < 464 {
+		return nil, fmt.Errorf("file set descriptor: %w", ErrBufferTooShort)
+	}
+
+	fsd := &FileSetDescriptor{}
+
+	err := fsd.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	fsd.RecordingDateTime = rTimestamp(b[16:])
+	fsd.InterchangeLevel = rlU16(b[28:])
+	fsd.MaximumInterchangeLevel = rlU16(b[30:])
+	fsd.CharacterSetList = rlU32(b[32:])
+	fsd.MaximumCharacterSetList = rlU32(b[36:])
+	fsd.FileSetNumber = rlU32(b[40:])
+	fsd.FileSetDescriptorNumber = rlU32(b[44:])
+	fsd.LogicalVolumeIdentifier = rDstring(b[112:], 128)
+	fsd.FileSetIdentifier = rDstring(b[304:], 32)
+	fsd.CopyrightFileIdentifier = rDstring(b[336:], 32)
+	fsd.AbstractFileIdentifier = rDstring(b[368:], 32)
 	fsd.RootDirectoryICB = NewExtentLong(b[400:])
 	fsd.DomainIdentifier = NewEntityID(b[416:])
-	fsd.NexExtent = NewExtentLong(b[448:])
-	return fsd
+	fsd.NextExtent = NewExtentLong(b[448:])
+
+	return fsd, nil
 }
 
-func NewFileSetDescriptor(b []byte) *FileSetDescriptor {
-	return new(FileSetDescriptor).FromBytes(b)
-}
-
-func (d *Descriptor) FileSetDescriptor() *FileSetDescriptor {
-	return NewFileSetDescriptor(d.data)
-}
-
+// FileIdentifierDescriptor is ECMA-167 §14.4.
 type FileIdentifierDescriptor struct {
 	Descriptor                Descriptor
 	FileVersionNumber         uint16
@@ -278,37 +326,51 @@ type FileIdentifierDescriptor struct {
 	FileIdentifier            string
 }
 
+// Len returns the padded length of this FID on disk.
 func (fid *FileIdentifierDescriptor) Len() uint64 {
 	l := 38 + uint64(fid.LengthOfImplementationUse) + uint64(fid.LengthOfFileIdentifier)
-	return 4 * ((l + 3) / 4) // padding = 4
+	return 4 * ((l + 3) / 4) // round up to 4-byte boundary
 }
 
-func (fid *FileIdentifierDescriptor) FromBytes(b []byte) *FileIdentifierDescriptor {
-	fid.Descriptor.FromBytes(b)
-	fid.FileVersionNumber = rl_u16(b[16:])
-	fid.FileCharacteristics = r_u8(b[18:])
-	fid.LengthOfFileIdentifier = r_u8(b[19:])
+func newFileIdentifierDescriptor(b []byte) (*FileIdentifierDescriptor, error) {
+	if len(b) < 38 {
+		return nil, fmt.Errorf("file identifier descriptor: %w", ErrBufferTooShort)
+	}
+
+	fid := &FileIdentifierDescriptor{}
+
+	err := fid.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	fid.FileVersionNumber = rlU16(b[16:])
+	fid.FileCharacteristics = rU8(b[18:])
+	fid.LengthOfFileIdentifier = rU8(b[19:])
 	fid.ICB = NewExtentLong(b[20:])
-	fid.LengthOfImplementationUse = rl_u16(b[36:])
-	fid.ImplementationUse = NewEntityID(b[38:])
-	identStart := 38 + fid.LengthOfImplementationUse
-	fid.FileIdentifier = r_dcharacters(b[identStart : fid.LengthOfFileIdentifier+uint8(identStart)])
-	return fid
+	fid.LengthOfImplementationUse = rlU16(b[36:])
+
+	if fid.LengthOfImplementationUse >= 32 && len(b) >= 38+32 {
+		fid.ImplementationUse = NewEntityID(b[38:])
+	}
+
+	// Use uint32 arithmetic to avoid uint8 truncation on identStart.
+	identStart := uint32(38) + uint32(fid.LengthOfImplementationUse)
+	identEnd := identStart + uint32(fid.LengthOfFileIdentifier)
+
+	if identEnd <= uint32(len(b)) && fid.LengthOfFileIdentifier > 0 {
+		fid.FileIdentifier = rDcharacters(b[identStart:identEnd])
+	}
+
+	return fid, nil
 }
 
-func NewFileIdentifierDescriptor(b []byte) *FileIdentifierDescriptor {
-	return new(FileIdentifierDescriptor).FromBytes(b)
-}
-
-func (d *Descriptor) FileIdentifierDescriptor() *FileIdentifierDescriptor {
-	return NewFileIdentifierDescriptor(d.data)
-}
-
+// FileEntry is ECMA-167 §14.9.
 type FileEntry struct {
 	Descriptor                    Descriptor
 	ICBTag                        *ICBTag
-	Uid                           uint32
-	Gid                           uint32
+	UID                           uint32
+	GID                           uint32
 	Permissions                   uint32
 	FileLinkCount                 uint16
 	RecordFormat                  uint8
@@ -322,47 +384,59 @@ type FileEntry struct {
 	Checkpoint                    uint32
 	ExtendedAttributeICB          ExtentLong
 	ImplementationIdentifier      EntityID
-	UniqueId                      uint64
+	UniqueID                      uint64
 	LengthOfExtendedAttributes    uint32
 	LengthOfAllocationDescriptors uint32
 	ExtendedAttributes            []byte
 	AllocationDescriptors         []Extent
 }
 
-func (fe *FileEntry) FromBytes(b []byte) *FileEntry {
-	fe.Descriptor.FromBytes(b)
+func newFileEntry(b []byte) (*FileEntry, error) {
+	if len(b) < 176 {
+		return nil, fmt.Errorf("file entry: %w", ErrBufferTooShort)
+	}
+
+	fe := &FileEntry{}
+
+	err := fe.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
 	fe.ICBTag = NewICBTag(b[16:])
-	fe.Uid = rl_u32(b[36:])
-	fe.Gid = rl_u32(b[40:])
-	fe.Permissions = rl_u32(b[44:])
-	fe.FileLinkCount = rl_u16(b[48:])
-	fe.RecordFormat = r_u8(b[50:])
-	fe.RecordDisplayAttributes = r_u8(b[51:])
-	fe.RecordLength = rl_u32(b[52:])
-	fe.InformationLength = rl_u64(b[56:])
-	fe.LogicalBlocksRecorded = rl_u64(b[64:])
-	fe.AccessTime = r_timestamp(b[72:])
-	fe.ModificationTime = r_timestamp(b[84:])
-	fe.AttributeTime = r_timestamp(b[96:])
-	fe.Checkpoint = rl_u32(b[108:])
+	fe.UID = rlU32(b[36:])
+	fe.GID = rlU32(b[40:])
+	fe.Permissions = rlU32(b[44:])
+	fe.FileLinkCount = rlU16(b[48:])
+	fe.RecordFormat = rU8(b[50:])
+	fe.RecordDisplayAttributes = rU8(b[51:])
+	fe.RecordLength = rlU32(b[52:])
+	fe.InformationLength = rlU64(b[56:])
+	fe.LogicalBlocksRecorded = rlU64(b[64:])
+	fe.AccessTime = rTimestamp(b[72:])
+	fe.ModificationTime = rTimestamp(b[84:])
+	fe.AttributeTime = rTimestamp(b[96:])
+	fe.Checkpoint = rlU32(b[108:])
 	fe.ExtendedAttributeICB = NewExtentLong(b[112:])
 	fe.ImplementationIdentifier = NewEntityID(b[128:])
-	fe.UniqueId = rl_u64(b[160:])
-	fe.LengthOfExtendedAttributes = rl_u32(b[168:])
-	fe.LengthOfAllocationDescriptors = rl_u32(b[172:])
+	fe.UniqueID = rlU64(b[160:])
+	fe.LengthOfExtendedAttributes = rlU32(b[168:])
+	fe.LengthOfAllocationDescriptors = rlU32(b[172:])
+
 	allocDescStart := 176 + fe.LengthOfExtendedAttributes
-	fe.ExtendedAttributes = b[176:allocDescStart]
-	fe.AllocationDescriptors = make([]Extent, fe.LengthOfAllocationDescriptors/8)
-	for i := range fe.AllocationDescriptors {
-		fe.AllocationDescriptors[i] = NewExtent(b[allocDescStart+uint32(i)*8:])
+	if uint32(len(b)) >= allocDescStart {
+		fe.ExtendedAttributes = b[176:allocDescStart]
 	}
-	return fe
-}
 
-func NewFileEntry(b []byte) *FileEntry {
-	return new(FileEntry).FromBytes(b)
-}
+	numDescriptors := fe.LengthOfAllocationDescriptors / 8
+	fe.AllocationDescriptors = make([]Extent, numDescriptors)
 
-func (d *Descriptor) FileEntry() *FileEntry {
-	return NewFileEntry(d.data)
+	for i := range fe.AllocationDescriptors {
+		offset := allocDescStart + uint32(i)*8
+		if offset+8 <= uint32(len(b)) {
+			fe.AllocationDescriptors[i] = NewExtent(b[offset:])
+		}
+	}
+
+	return fe, nil
 }
