@@ -18,6 +18,8 @@ const (
 
 	extNext uint32 = 3 << 30
 	extHole uint32 = 2 << 30
+
+	extADBytes = 20
 )
 
 func TestPhysicalImage(t *testing.T) {
@@ -36,6 +38,7 @@ func TestPhysicalImage(t *testing.T) {
 	assertContents(t, files["note.txt"], "hello")
 	assertContents(t, files["cont.txt"], "cont")
 	assertContents(t, files["span.txt"], "span")
+	assertContents(t, files["xcont.txt"], "xcon")
 	assertOffset(t, files["cont.txt"], int64((partStart+7)*sectorSize))
 	assertOpenError(t, files["over.txt"])
 }
@@ -355,6 +358,7 @@ func buildPhysicalImage() []byte {
 	fids = appendFID(fids, "cont.txt", 5, 0, 0)
 	fids = appendFID(fids, "span.txt", 9, 0, 0)
 	fids = appendFID(fids, "over.txt", 8, 0, 0)
+	fids = appendFID(fids, "xcont.txt", 12, 0, 0)
 
 	placePart(img, 0, writeFSD(1, 0))
 	placePart(img, 1, writeFE(4, uint64(len(fids)), []ext{{length: uint32(len(fids)), lbn: 2}}))
@@ -367,6 +371,9 @@ func buildPhysicalImage() []byte {
 	placePart(img, 8, writeFE(5, 4, []ext{{length: 4, lbn: 80}}))
 	placePart(img, 9, writeSpanningFE(11))
 	placePart(img, 11, payloadSector([]byte("span")))
+	placePart(img, 12, writeEFE(5, 2, 4, []ext{{length: 44 | extNext, lbn: 13, part: 0}}))
+	placePart(img, 13, writeExtAED(4, 14, 0))
+	placePart(img, 14, payloadSector([]byte("xcon")))
 
 	return img
 }
@@ -551,7 +558,7 @@ func adStride(flags uint16) int {
 	case 1:
 		return 16
 	case 2:
-		return 18
+		return extADBytes
 	default:
 		return 8
 	}
@@ -561,7 +568,7 @@ func putAD(b []byte, stride int, ad ext) {
 	switch stride {
 	case 16:
 		putLongAD(b, ad.length, ad.lbn, ad.part)
-	case 18:
+	case extADBytes:
 		putExtAD(b, ad.length, ad.lbn, ad.part)
 	default:
 		putShortAD(b, ad.length, ad.lbn)
@@ -612,11 +619,27 @@ func putShortAD(b []byte, length, lbn uint32) {
 
 func putExtAD(b []byte, length, lbn uint32, part uint16) {
 	data := length & 0x3FFFFFFF
+	recorded := data
+	info := data
+
+	if length>>30 == 3 {
+		recorded = 0
+		info = 0
+	}
+
 	binary.LittleEndian.PutUint32(b[0:], length)
-	binary.LittleEndian.PutUint32(b[4:], data)
-	binary.LittleEndian.PutUint32(b[8:], data)
+	binary.LittleEndian.PutUint32(b[4:], recorded)
+	binary.LittleEndian.PutUint32(b[8:], info)
 	binary.LittleEndian.PutUint32(b[12:], lbn)
 	binary.LittleEndian.PutUint16(b[16:], part)
+}
+
+func writeExtAED(length, lbn uint32, part uint16) []byte {
+	sec := writeTagSector(0x102)
+	binary.LittleEndian.PutUint32(sec[20:], extADBytes)
+	putExtAD(sec[24:], length, lbn, part)
+
+	return sec
 }
 
 func countMaps(maps []byte) uint32 {

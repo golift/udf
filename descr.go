@@ -27,6 +27,10 @@ const (
 	adExtended uint8 = 2
 	adInICB    uint8 = 3
 
+	// extADSize is ECMA-167 4/14.14.3: three uint32 lengths, a 6-byte lb_addr,
+	// and a 2-byte implementation-use field.
+	extADSize = 20
+
 	// locNotRecorded is the UDF "not specified" block location (all bits set).
 	locNotRecorded uint32 = 0xFFFFFFFF
 
@@ -604,7 +608,7 @@ func adSize(kind uint8) (int, error) {
 	case adLong:
 		return 16, nil
 	case adExtended:
-		return 18, nil
+		return extADSize, nil
 	default:
 		return 0, fmt.Errorf("allocation descriptor type %d: %w", kind, ErrNoAllocDescriptors)
 	}
@@ -633,7 +637,7 @@ func parseOneAD(b []byte, kind uint8, part uint16) (Extent, error) {
 }
 
 func parseExtendedAD(b []byte) (Extent, error) {
-	if len(b) < 18 {
+	if len(b) < extADSize {
 		return Extent{}, fmt.Errorf("extended allocation descriptor: %w", ErrBufferTooShort)
 	}
 
@@ -642,7 +646,9 @@ func parseExtendedAD(b []byte) (Extent, error) {
 	info := rlU32(b[8:])
 	data := length & 0x3FFFFFFF
 
-	if recorded != data || info != data {
+	// A type-3 descriptor points at the next allocation extent. Its recorded
+	// and information lengths are zero; the extent length is the block size.
+	if length>>30 != ExtentNextDescriptors && (recorded != data || info != data) {
 		return Extent{}, fmt.Errorf("extended allocation descriptor recorded %d information %d: %w",
 			recorded, info, errCompressedExtent)
 	}

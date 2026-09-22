@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 )
 
 // byteRun is a contiguous span of file bytes, either stored in the image or a hole.
@@ -317,11 +318,23 @@ func (r *extentReader) readFrom(p []byte, off int64) (int, error) {
 }
 
 func runAt(runs []byteRun, off int64) (byteRun, bool) {
-	for _, run := range runs {
-		if off >= run.fileOff && off < run.fileOff+run.length {
-			return run, true
+	// Runs are ordered by fileOff. Binary search keeps a sequential read of a
+	// fragmented file at O(N log N) run checks instead of O(N²).
+	i, found := sort.Find(len(runs), func(i int) int {
+		run := runs[i]
+		if off < run.fileOff {
+			return -1
 		}
+
+		if off >= run.fileOff+run.length {
+			return 1
+		}
+
+		return 0
+	})
+	if !found {
+		return byteRun{}, false
 	}
 
-	return byteRun{}, false
+	return runs[i], true
 }
