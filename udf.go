@@ -35,8 +35,13 @@ var (
 	errVDSNotTerminated     = errors.New("volume descriptor sequence is not terminated")
 	errBadBlockSize         = errors.New("unsupported logical block size")
 	errBadFIDTag            = errors.New("unexpected file identifier tag")
+	errBadFSDTag            = errors.New("unexpected file set descriptor tag")
 	errDirectoryTooLarge    = errors.New("directory exceeds size limit")
 	errBadSeek              = errors.New("invalid seek")
+	errOutsidePartition     = errors.New("extent exceeds partition length")
+	errFileEntryTooLarge    = errors.New("file entry exceeds size limit")
+	errAllocTooLarge        = errors.New("allocation extent exceeds size limit")
+	errCompressedExtent     = errors.New("compressed extents are not supported")
 )
 
 // ErrNilReader is returned when a nil io.ReaderAt is passed to NewUdfFromReader.
@@ -355,7 +360,7 @@ func (u *Udf) readRootEntry() error {
 	}
 
 	if u.fsd.Descriptor.TagIdentifier != descriptorFileSet {
-		return fmt.Errorf("file set tag %d: %w", u.fsd.Descriptor.TagIdentifier, ErrNoFileEntry)
+		return fmt.Errorf("file set tag %d: %w", u.fsd.Descriptor.TagIdentifier, errBadFSDTag)
 	}
 
 	root := u.fsd.RootDirectoryICB

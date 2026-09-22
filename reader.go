@@ -15,12 +15,29 @@ type byteRun struct {
 	hole    bool
 }
 
-const maxDirectoryBytes = 32 << 20
+const (
+	maxDirectoryBytes = 32 << 20
+	maxFileEntryBytes = 1 << 20
+	maxAllocDescBytes = 1 << 20
+	allocExtentHeader = 24
+)
 
 func (u *Udf) readFileEntry(part uint16, lbn uint32) (*FileEntry, error) {
 	buf, err := u.readPartitionBytes(part, lbn, u.blockSize)
 	if err != nil {
 		return nil, fmt.Errorf("reading file entry at partition %d block %d: %w", part, lbn, err)
+	}
+
+	total, err := fileEntryTotal(buf)
+	if err != nil {
+		return nil, fmt.Errorf("file entry at partition %d block %d: %w", part, lbn, err)
+	}
+
+	if total > u.blockSize {
+		buf, err = u.readPartitionBytes(part, lbn, total)
+		if err != nil {
+			return nil, fmt.Errorf("reading file entry at partition %d block %d: %w", part, lbn, err)
+		}
 	}
 
 	fe, err := parseFileEntry(buf, part)
@@ -29,6 +46,42 @@ func (u *Udf) readFileEntry(part uint16, lbn uint32) (*FileEntry, error) {
 	}
 
 	return fe, nil
+}
+
+func fileEntryTotal(b []byte) (uint32, error) {
+	if len(b) < 16 {
+		return 0, fmt.Errorf("file entry: %w", ErrBufferTooShort)
+	}
+
+	var header uint32
+
+	switch rlU16(b) {
+	case descriptorFileEntry:
+		header = fileEntryHeader
+	case descriptorExtendedFileEntry:
+		header = extendedFileEntryHeader
+	default:
+		return 0, fmt.Errorf("tag %d: %w", rlU16(b), ErrNoFileEntry)
+	}
+
+	if uint32(len(b)) < header {
+		return 0, fmt.Errorf("file entry: %w", ErrBufferTooShort)
+	}
+
+	lea := rlU32(b[header-8:])
+	lad := rlU32(b[header-4:])
+
+	total, ok := within(maxFileEntryBytes, header, lea)
+	if !ok {
+		return 0, errFileEntryTooLarge
+	}
+
+	total, ok = within(maxFileEntryBytes, total, lad)
+	if !ok {
+		return 0, errFileEntryTooLarge
+	}
+
+	return total, nil
 }
 
 func (u *Udf) readPartitionBytes(part uint16, lbn, n uint32) ([]byte, error) {
@@ -74,14 +127,14 @@ func (u *Udf) readFileContents(fe *FileEntry) ([]byte, error) {
 	return buf, nil
 }
 
-func (u *Udf) open(fe *FileEntry) (io.ReadSeeker, error) {
+func (u *Udf) open(fe *FileEntry) (*io.SectionReader, error) {
 	if len(fe.embedded) > 0 {
 		n := len(fe.embedded)
 		if fe.InformationLength < uint64(n) {
 			n = int(fe.InformationLength)
 		}
 
-		return bytes.NewReader(fe.embedded[:n]), nil
+		return io.NewSectionReader(bytes.NewReader(fe.embedded[:n]), 0, int64(n)), nil
 	}
 
 	runs, err := u.buildRuns(fe)
@@ -89,7 +142,9 @@ func (u *Udf) open(fe *FileEntry) (io.ReadSeeker, error) {
 		return nil, err
 	}
 
-	return &extentReader{r: u.r, size: int64(fe.InformationLength), runs: runs}, nil
+	er := &extentReader{r: u.r, size: int64(fe.InformationLength), runs: runs}
+
+	return io.NewSectionReader(er, 0, er.size), nil
 }
 
 func (u *Udf) buildRuns(fe *FileEntry) ([]byteRun, error) {
@@ -145,25 +200,34 @@ func (u *Udf) runsFromAds(ads []Extent, kind uint8, fileOff int64, depth int) ([
 
 func (u *Udf) readNextAds(ad Extent, kind uint8) ([]Extent, error) {
 	n := ad.DataLength()
-	if n < 24 {
+	if n < allocExtentHeader {
 		return nil, fmt.Errorf("allocation extent: %w", ErrBufferTooShort)
 	}
 
-	buf, err := u.readPartitionBytes(ad.Partition, ad.Location, n)
+	header, err := u.readPartitionBytes(ad.Partition, ad.Location, allocExtentHeader)
 	if err != nil {
 		return nil, fmt.Errorf("reading allocation extent: %w", err)
 	}
 
-	if rlU16(buf) != descriptorAllocExtent {
-		return nil, fmt.Errorf("allocation extent tag %d: %w", rlU16(buf), ErrNoAllocDescriptors)
+	if rlU16(header) != descriptorAllocExtent {
+		return nil, fmt.Errorf("allocation extent tag %d: %w", rlU16(header), ErrNoAllocDescriptors)
 	}
 
-	adLen := rlU32(buf[20:])
-	if uint32(len(buf)) < 24+adLen {
-		return nil, fmt.Errorf("allocation extent: %w", ErrBufferTooShort)
+	adLen := rlU32(header[20:])
+	if adLen > maxAllocDescBytes || adLen > n-allocExtentHeader {
+		return nil, fmt.Errorf("allocation extent descriptors %d: %w", adLen, errAllocTooLarge)
 	}
 
-	return parseAllocBytes(buf[24:24+adLen], kind, ad.Partition)
+	if adLen == 0 {
+		return nil, nil
+	}
+
+	buf, err := u.readPartitionBytes(ad.Partition, ad.Location, allocExtentHeader+adLen)
+	if err != nil {
+		return nil, fmt.Errorf("reading allocation extent: %w", err)
+	}
+
+	return parseAllocBytes(buf[allocExtentHeader:], kind, ad.Partition)
 }
 
 func (u *Udf) consumeRecorded(runs []byteRun, fileOff int64, part uint16, lbn, n uint32) ([]byteRun, int64, error) {
@@ -191,46 +255,30 @@ var errAllocChain = errors.New("allocation descriptor chain too deep")
 type extentReader struct {
 	r    io.ReaderAt
 	size int64
-	off  int64
 	runs []byteRun
 }
 
-func (r *extentReader) Read(p []byte) (int, error) {
-	if r.off >= r.size {
+func (r *extentReader) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fmt.Errorf("negative read offset %d: %w", off, errBadSeek)
+	}
+
+	if off >= r.size {
 		return 0, io.EOF
 	}
 
-	if int64(len(p)) > r.size-r.off {
-		p = p[:r.size-r.off]
+	if int64(len(p)) > r.size-off {
+		p = p[:r.size-off]
+
+		n, err := r.readFrom(p, off)
+		if err == nil {
+			err = io.EOF
+		}
+
+		return n, err
 	}
 
-	n, err := r.readFrom(p, r.off)
-	r.off += int64(n)
-
-	return n, err
-}
-
-func (r *extentReader) Seek(offset int64, whence int) (int64, error) {
-	var abs int64
-
-	switch whence {
-	case io.SeekStart:
-		abs = offset
-	case io.SeekCurrent:
-		abs = r.off + offset
-	case io.SeekEnd:
-		abs = r.size + offset
-	default:
-		return 0, fmt.Errorf("seek whence %d: %w", whence, errBadSeek)
-	}
-
-	if abs < 0 {
-		return 0, fmt.Errorf("negative seek position %d: %w", abs, errBadSeek)
-	}
-
-	r.off = abs
-
-	return abs, nil
+	return r.readFrom(p, off)
 }
 
 func (r *extentReader) readFrom(p []byte, off int64) (int, error) {
@@ -241,15 +289,7 @@ func (r *extentReader) readFrom(p []byte, off int64) (int, error) {
 
 		run, ok := runAt(r.runs, pos)
 		if !ok {
-			n := holeSpan(r.runs, pos, len(p)-dst)
-			if n <= 0 {
-				return dst, io.ErrUnexpectedEOF
-			}
-
-			clear(p[dst : dst+n])
-			dst += n
-
-			continue
+			return dst, io.ErrUnexpectedEOF
 		}
 
 		n := min(int(run.length-(pos-run.fileOff)), len(p)-dst)
@@ -261,12 +301,16 @@ func (r *extentReader) readFrom(p []byte, off int64) (int, error) {
 			continue
 		}
 
-		_, err := r.r.ReadAt(p[dst:dst+n], run.phys+(pos-run.fileOff))
+		got, err := r.r.ReadAt(p[dst:dst+n], run.phys+(pos-run.fileOff))
+		dst += got
+
 		if err != nil {
 			return dst, fmt.Errorf("reading file data: %w", err)
 		}
 
-		dst += n
+		if got < n {
+			return dst, fmt.Errorf("reading file data: %w", io.ErrUnexpectedEOF)
+		}
 	}
 
 	return dst, nil
@@ -280,23 +324,4 @@ func runAt(runs []byteRun, off int64) (byteRun, bool) {
 	}
 
 	return byteRun{}, false
-}
-
-func holeSpan(runs []byteRun, off int64, limit int) int {
-	n := limit
-
-	for _, run := range runs {
-		if run.fileOff > off {
-			gap := int(run.fileOff - off)
-			if gap < n {
-				n = gap
-			}
-		}
-	}
-
-	if n <= 0 {
-		return 0
-	}
-
-	return n
 }

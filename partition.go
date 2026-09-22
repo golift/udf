@@ -3,8 +3,9 @@ package udf
 import "fmt"
 
 const (
-	partPhysical partKind = 1
-	partMeta     partKind = 2
+	partPhysical    partKind = 1
+	partMeta        partKind = 2
+	partUnsupported partKind = 3
 
 	idMetadata = "*UDF Metadata Partition"
 )
@@ -14,6 +15,7 @@ type partKind uint8
 // partMap is one logical volume partition map, indexed by partition reference number.
 type partMap struct {
 	kind       partKind
+	name       string
 	volSeq     uint16
 	number     uint16
 	start      uint32
@@ -100,7 +102,9 @@ func parseType2Map(b []byte) (partMap, error) {
 			name = "type 2"
 		}
 
-		return partMap{}, fmt.Errorf("%s: %w", name, ErrUnsupportedPartition)
+		// Virtual and sparable maps are common on otherwise readable volumes.
+		// Keep the map and fail only if a read is routed through it.
+		return partMap{kind: partUnsupported, name: name}, nil
 	}
 
 	if len(b) < 64 {
@@ -220,8 +224,8 @@ func (u *Udf) metadataFileAt(part uint16, lbn uint32) (*FileEntry, error) {
 }
 
 // translateLogical maps a byte offset inside a partition to an image offset.
-// n is the number of bytes that are physically contiguous from that offset,
-// capped at max.
+// The second result is how many bytes are physically contiguous from that
+// offset, capped at limit and at the end of the partition.
 func (u *Udf) translateLogical(part uint16, logicalOff, limit int64) (int64, int64, error) {
 	if limit <= 0 {
 		return 0, 0, ErrShortRead
@@ -232,12 +236,31 @@ func (u *Udf) translateLogical(part uint16, logicalOff, limit int64) (int64, int
 	}
 
 	m := &u.partMaps[part]
-	if m.kind == partPhysical {
-		return int64(m.start)*int64(u.blockSize) + logicalOff, limit, nil
+
+	switch m.kind {
+	case partPhysical:
+		return translatePhysical(m, logicalOff, limit, u.blockSize)
+	case partMeta:
+		return u.translateMeta(m, logicalOff, limit)
+	case partUnsupported:
+		return 0, 0, fmt.Errorf("%s: %w", m.name, ErrUnsupportedPartition)
+	default:
+		return 0, 0, fmt.Errorf("partition reference %d: %w", part, ErrUnsupportedPartition)
+	}
+}
+
+func translatePhysical(m *partMap, logicalOff, limit int64, blockSize uint32) (int64, int64, error) {
+	partBytes := int64(m.length) * int64(blockSize)
+	if logicalOff < 0 || logicalOff >= partBytes {
+		return 0, 0, fmt.Errorf("partition %d offset %d: %w", m.number, logicalOff, errOutsidePartition)
 	}
 
+	return int64(m.start)*int64(blockSize) + logicalOff, min(limit, partBytes-logicalOff), nil
+}
+
+func (u *Udf) translateMeta(m *partMap, logicalOff, limit int64) (int64, int64, error) {
 	if len(m.runs) == 0 {
-		return 0, 0, fmt.Errorf("metadata partition %d is not loaded: %w", part, ErrNoPartition)
+		return 0, 0, fmt.Errorf("metadata partition %d is not loaded: %w", m.number, ErrNoPartition)
 	}
 
 	for _, run := range m.runs {

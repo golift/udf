@@ -33,13 +33,11 @@ func TestPhysicalImage(t *testing.T) {
 	}
 
 	files := readRoot(t, image)
-	if got := readFile(t, files["note.txt"]); got != "hello" {
-		t.Fatalf("note.txt = %q", got)
-	}
-
-	if got := readFile(t, files["cont.txt"]); got != "cont" {
-		t.Fatalf("cont.txt = %q, want continuation extent", got)
-	}
+	assertContents(t, files["note.txt"], "hello")
+	assertContents(t, files["cont.txt"], "cont")
+	assertContents(t, files["span.txt"], "span")
+	assertOffset(t, files["cont.txt"], int64((partStart+7)*sectorSize))
+	assertOpenError(t, files["over.txt"])
 }
 
 func TestMetadataPartition(t *testing.T) {
@@ -75,22 +73,130 @@ func TestMetadataMirror(t *testing.T) {
 	assertMetadataTree(t, image)
 }
 
-func TestVirtualPartitionRejected(t *testing.T) {
+func TestVirtualPartitionRead(t *testing.T) {
+	t.Parallel()
+
+	image, err := udf.NewUdfFromReader(bytes.NewReader(buildMetadataVolume(0x0260, 0, 0xFFFFFFFF, true)))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	files := readRoot(t, image)
+	assertContents(t, files["hello.txt"], "hello")
+
+	_, err = files["vat.bin"].NewReader()
+	if !errors.Is(err, udf.ErrUnsupportedPartition) {
+		t.Fatalf("vat.bin: %v", err)
+	}
+}
+
+func TestBadFileSetTag(t *testing.T) {
+	t.Parallel()
+
+	img := buildPhysicalImage()
+	binary.LittleEndian.PutUint16(img[partStart*sectorSize:], 0x105)
+
+	_, err := udf.NewUdfFromReader(bytes.NewReader(img))
+	if err == nil || errors.Is(err, udf.ErrNoFileEntry) {
+		t.Fatalf("error = %v, want a file set tag error", err)
+	}
+}
+
+func TestWrappedFileEntryLength(t *testing.T) {
+	t.Parallel()
+
+	img := buildPhysicalImage()
+	binary.LittleEndian.PutUint32(img[(partStart+3)*sectorSize+168:], 0xFFFFFFF0)
+
+	image := openImage(t, img)
+
+	_, err := readRoot(t, image)["note.txt"].NewReader()
+	if err == nil {
+		t.Fatal("wrapped extended-attribute length opened")
+	}
+}
+
+func TestShortFileIsUnexpectedEOF(t *testing.T) {
+	t.Parallel()
+
+	img := buildPhysicalImage()
+	binary.LittleEndian.PutUint64(img[(partStart+3)*sectorSize+56:], 100)
+
+	reader := openNamed(t, img, "note.txt")
+	buf, err := io.ReadAll(reader)
+
+	if string(buf) != "hello" || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("read %q err=%v, want hello and unexpected EOF", buf, err)
+	}
+}
+
+func TestTruncatedImageKeepsPartialRead(t *testing.T) {
+	t.Parallel()
+
+	img := buildPhysicalImage()
+	img = img[:(partStart+4)*sectorSize+2]
+
+	reader := openNamed(t, img, "note.txt")
+	buf, err := io.ReadAll(reader)
+
+	if string(buf) != "he" || err == nil {
+		t.Fatalf("read %q err=%v, want partial hello", buf, err)
+	}
+}
+
+func TestHugeAllocationExtent(t *testing.T) {
+	t.Parallel()
+
+	img := buildPhysicalImage()
+	binary.LittleEndian.PutUint32(img[(partStart+6)*sectorSize+20:], 1<<28)
+
+	image := openImage(t, img)
+
+	_, err := readRoot(t, image)["cont.txt"].NewReader()
+	if err == nil {
+		t.Fatal("huge allocation extent opened")
+	}
+}
+
+func TestCompressedExtentRejected(t *testing.T) {
 	t.Parallel()
 
 	img := buildMetadataImage(0x0250, 0, 0xFFFFFFFF)
-	ident := 34*sectorSize + 440 + 6 + 4 + 1
+	binary.LittleEndian.PutUint32(img[(partStart+26)*sectorSize+220:], 1)
 
-	for i := range 23 {
-		img[ident+i] = 0
+	image := openImage(t, img)
+
+	_, err := readRoot(t, image)["ext.bin"].NewReader()
+	if err == nil {
+		t.Fatal("compressed extent opened")
+	}
+}
+
+func openImage(t *testing.T, img []byte) *udf.Udf {
+	t.Helper()
+
+	image, err := udf.NewUdfFromReader(bytes.NewReader(img))
+	if err != nil {
+		t.Fatalf("open: %v", err)
 	}
 
-	copy(img[ident:], "*UDF Virtual Partition")
+	return image
+}
 
-	_, err := udf.NewUdfFromReader(bytes.NewReader(img))
-	if !errors.Is(err, udf.ErrUnsupportedPartition) {
-		t.Fatalf("error = %v, want unsupported partition", err)
+func openNamed(t *testing.T, img []byte, name string) io.Reader {
+	t.Helper()
+
+	file := readRoot(t, openImage(t, img))[name]
+	if file == nil {
+		t.Fatalf("missing %s", name)
 	}
+
+	reader, err := file.NewReader()
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+
+	return reader
 }
 
 func assertMetadataTree(t *testing.T, image *udf.Udf) {
@@ -101,6 +207,7 @@ func assertMetadataTree(t *testing.T, image *udf.Udf) {
 	assertContents(t, files["split.bin"], "ABCDEFGH")
 	assertContents(t, files["embed.dat"], "xyz")
 	assertContents(t, files["gap.bin"], "AB\x00\x00CD")
+	assertContents(t, files["ext.bin"], "EX")
 	assertBDMV(t, files["BDMV"])
 	assertSplitSeek(t, files["split.bin"])
 }
@@ -146,6 +253,10 @@ func assertSplitSeek(t *testing.T, file *udf.File) {
 	reader, err := file.NewReader()
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if reader.Size() != 8 {
+		t.Fatalf("split.bin size = %d, want 8", reader.Size())
 	}
 
 	_, err = reader.Seek(4, io.SeekStart)
@@ -201,6 +312,32 @@ func readFile(t *testing.T, file *udf.File) string {
 	return string(buf)
 }
 
+func assertOffset(t *testing.T, file *udf.File, want int64) {
+	t.Helper()
+
+	got, err := file.GetFileOffset()
+	if err != nil {
+		t.Fatalf("offset: %v", err)
+	}
+
+	if got != want {
+		t.Fatalf("offset = %d, want %d", got, want)
+	}
+}
+
+func assertOpenError(t *testing.T, file *udf.File) {
+	t.Helper()
+
+	if file == nil {
+		t.Fatal("missing file")
+	}
+
+	_, err := file.NewReader()
+	if err == nil {
+		t.Fatalf("%s opened", file.Name())
+	}
+}
+
 func revisionName(rev uint16) string {
 	if rev == 0x0260 {
 		return "udf-2.60"
@@ -216,37 +353,68 @@ func buildPhysicalImage() []byte {
 	fids := appendFID(nil, "", 1, 0, 0x08)
 	fids = appendFID(fids, "note.txt", 3, 0, 0)
 	fids = appendFID(fids, "cont.txt", 5, 0, 0)
+	fids = appendFID(fids, "span.txt", 9, 0, 0)
+	fids = appendFID(fids, "over.txt", 8, 0, 0)
 
 	placePart(img, 0, writeFSD(1, 0))
-	placePart(img, 1, writeFE(4, 0, uint64(len(fids)), []ext{{length: uint32(len(fids)), lbn: 2}}))
+	placePart(img, 1, writeFE(4, uint64(len(fids)), []ext{{length: uint32(len(fids)), lbn: 2}}))
 	placePart(img, 2, payloadSector(fids))
-	placePart(img, 3, writeFE(5, 0, 5, []ext{{length: 5, lbn: 4}}))
+	placePart(img, 3, writeFE(5, 5, []ext{{length: 5, lbn: 4}}))
 	placePart(img, 4, payloadSector([]byte("hello")))
-	placePart(img, 5, writeFE(5, 0, 4, []ext{{length: 32 | extNext, lbn: 6}}))
+	placePart(img, 5, writeFE(5, 4, []ext{{length: 32 | extNext, lbn: 6}}))
 	placePart(img, 6, writeAED(4, 7))
 	placePart(img, 7, payloadSector([]byte("cont")))
+	placePart(img, 8, writeFE(5, 4, []ext{{length: 4, lbn: 80}}))
+	placePart(img, 9, writeSpanningFE(11))
+	placePart(img, 11, payloadSector([]byte("span")))
 
 	return img
 }
 
 func buildMetadataImage(rev uint16, fileLoc, mirrorLoc uint32) []byte {
-	img := make([]byte, imageSectors*sectorSize)
-	writeVolume(img, rev, 0, 1, append(type1Map(), metaMap(fileLoc, mirrorLoc)...))
+	return buildMetadataVolume(rev, fileLoc, mirrorLoc, false)
+}
 
+func buildMetadataVolume(rev uint16, fileLoc, mirrorLoc uint32, withVAT bool) []byte {
+	img := make([]byte, imageSectors*sectorSize)
+
+	maps := append(type1Map(), metaMap(fileLoc, mirrorLoc)...)
+	if withVAT {
+		maps = append(maps, virtualMap()...)
+	}
+
+	writeVolume(img, rev, 0, 1, maps)
+
+	root, bdmv := metadataDirectories(withVAT)
+	placeMetadata(img, root, bdmv, withVAT)
+
+	return img
+}
+
+func metadataDirectories(withVAT bool) ([]byte, []byte) {
 	root := appendFID(nil, "", 1, 1, 0x08)
 	root = appendFID(root, "hello.txt", 3, 1, 0)
 	root = appendFID(root, "split.bin", 4, 1, 0)
 	root = appendFID(root, "embed.dat", 5, 1, 0)
 	root = appendFID(root, "gap.bin", 6, 1, 0)
+	root = appendFID(root, "ext.bin", 10, 1, 0)
 	root = appendFID(root, "BDMV", 7, 1, 0x02)
+
+	if withVAT {
+		root = appendFID(root, "vat.bin", 11, 1, 0)
+	}
 
 	bdmv := appendFID(nil, "", 1, 1, 0x08)
 	bdmv = appendFID(bdmv, "index.bdmv", 9, 1, 0)
 
-	// Metadata file body is fragmented: block 0, then blocks 1-9 elsewhere.
-	metaFE := writeEFE(250, 0, 10*uint64(sectorSize), []ext{
+	return root, bdmv
+}
+
+func placeMetadata(img, root, bdmv []byte, withVAT bool) {
+	metaFE := writeEFE(250, 0, 12*uint64(sectorSize), []ext{
 		{length: sectorSize, lbn: 1},
 		{length: 9 * sectorSize, lbn: 10},
+		{length: 2 * sectorSize, lbn: 26},
 	})
 
 	placePart(img, 0, metaFE)
@@ -272,9 +440,13 @@ func buildMetadataImage(rev uint16, fileLoc, mirrorLoc uint32) []byte {
 	placePart(img, 22, payloadSector([]byte("BD")))
 	placePart(img, 24, payloadSector([]byte("AB")))
 	placePart(img, 25, payloadSector([]byte("CD")))
+	placePart(img, 26, writeEFE(5, 2, 2, []ext{{length: 2, lbn: 28, part: 0}}))
+	placePart(img, 28, payloadSector([]byte("EX")))
 	placePart(img, 30, payloadSector([]byte("EFGH")))
 
-	return img
+	if withVAT {
+		placePart(img, 27, writeEFE(5, 1, 3, []ext{{length: 3, lbn: 0, part: 2}}))
+	}
 }
 
 type ext struct {
@@ -316,11 +488,7 @@ func writeLVD(rev uint16, fsdLBN uint32, fsdPart uint16, maps []byte) []byte {
 	binary.LittleEndian.PutUint16(sec[240:], rev)
 	putLongAD(sec[248:], sectorSize, fsdLBN, fsdPart)
 	binary.LittleEndian.PutUint32(sec[264:], uint32(len(maps)))
-	binary.LittleEndian.PutUint32(sec[268:], 1)
-
-	if len(maps) > 6 {
-		binary.LittleEndian.PutUint32(sec[268:], 2)
-	}
+	binary.LittleEndian.PutUint32(sec[268:], countMaps(maps))
 
 	copy(sec[440:], maps)
 
@@ -341,9 +509,9 @@ func writeFSD(rootLBN uint32, rootPart uint16) []byte {
 	return sec
 }
 
-func writeFE(fileType byte, flags uint16, size uint64, ads []ext) []byte {
+func writeFE(fileType byte, size uint64, ads []ext) []byte {
 	sec := writeTagSector(0x105)
-	putICB(sec, fileType, flags)
+	putICB(sec, fileType, 0)
 	binary.LittleEndian.PutUint64(sec[56:], size)
 	binary.LittleEndian.PutUint32(sec[172:], uint32(8*len(ads)))
 
@@ -367,24 +535,52 @@ func writeEFE(fileType byte, flags uint16, size uint64, ads []ext) []byte {
 		return sec
 	}
 
-	stride := 8
-	if flags&7 == 1 {
-		stride = 16
-	}
-
+	stride := adStride(flags)
 	binary.LittleEndian.PutUint32(sec[212:], uint32(stride*len(ads)))
 
 	for i, ad := range ads {
 		off := 216 + stride*i
-		if stride == 16 {
-			putLongAD(sec[off:], ad.length, ad.lbn, ad.part)
-			continue
-		}
-
-		putShortAD(sec[off:], ad.length, ad.lbn)
+		putAD(sec[off:], stride, ad)
 	}
 
 	return sec
+}
+
+func adStride(flags uint16) int {
+	switch flags & 7 {
+	case 1:
+		return 16
+	case 2:
+		return 18
+	default:
+		return 8
+	}
+}
+
+func putAD(b []byte, stride int, ad ext) {
+	switch stride {
+	case 16:
+		putLongAD(b, ad.length, ad.lbn, ad.part)
+	case 18:
+		putExtAD(b, ad.length, ad.lbn, ad.part)
+	default:
+		putShortAD(b, ad.length, ad.lbn)
+	}
+}
+
+func writeSpanningFE(dataLBN uint32) []byte {
+	const lea = sectorSize
+
+	buf := make([]byte, 176+lea+8)
+	binary.LittleEndian.PutUint16(buf[0:], 0x105)
+	binary.LittleEndian.PutUint16(buf[2:], 3)
+	putICB(buf, 5, 0)
+	binary.LittleEndian.PutUint64(buf[56:], 4)
+	binary.LittleEndian.PutUint32(buf[168:], lea)
+	binary.LittleEndian.PutUint32(buf[172:], 8)
+	putShortAD(buf[176+lea:], 4, dataLBN)
+
+	return buf
 }
 
 func writeAED(length, lbn uint32) []byte {
@@ -414,6 +610,31 @@ func putShortAD(b []byte, length, lbn uint32) {
 	binary.LittleEndian.PutUint32(b[4:], lbn)
 }
 
+func putExtAD(b []byte, length, lbn uint32, part uint16) {
+	data := length & 0x3FFFFFFF
+	binary.LittleEndian.PutUint32(b[0:], length)
+	binary.LittleEndian.PutUint32(b[4:], data)
+	binary.LittleEndian.PutUint32(b[8:], data)
+	binary.LittleEndian.PutUint32(b[12:], lbn)
+	binary.LittleEndian.PutUint16(b[16:], part)
+}
+
+func countMaps(maps []byte) uint32 {
+	var n, off uint32
+
+	for off+2 <= uint32(len(maps)) {
+		length := uint32(maps[off+1])
+		if length < 2 || off+length > uint32(len(maps)) {
+			break
+		}
+
+		n++
+		off += length
+	}
+
+	return n
+}
+
 func putLongAD(b []byte, length, lbn uint32, part uint16) {
 	binary.LittleEndian.PutUint32(b[0:], length)
 	binary.LittleEndian.PutUint32(b[4:], lbn)
@@ -440,6 +661,16 @@ func metaMap(fileLoc, mirrorLoc uint32) []byte {
 	binary.LittleEndian.PutUint32(buf[48:], 0xFFFFFFFF)
 	binary.LittleEndian.PutUint32(buf[52:], 32)
 	binary.LittleEndian.PutUint16(buf[56:], 1)
+
+	return buf
+}
+
+func virtualMap() []byte {
+	buf := make([]byte, 64)
+	buf[0] = 2
+	buf[1] = 64
+	copy(buf[5:], "*UDF Virtual Partition")
+	binary.LittleEndian.PutUint16(buf[36:], 1)
 
 	return buf
 }

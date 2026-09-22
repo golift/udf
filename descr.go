@@ -513,8 +513,8 @@ func (fe *FileEntry) readICBPrefix(b []byte) {
 func (fe *FileEntry) finish(b []byte, header uint32, part uint16) error {
 	fe.partitionRef = part
 
-	adStart := header + fe.LengthOfExtendedAttributes
-	if adStart > uint32(len(b)) {
+	adStart, ok := within(uint32(len(b)), header, fe.LengthOfExtendedAttributes)
+	if !ok {
 		return fmt.Errorf("file entry extended attributes: %w", ErrBufferTooShort)
 	}
 
@@ -527,8 +527,8 @@ func (fe *FileEntry) finish(b []byte, header uint32, part uint16) error {
 		return fe.takeEmbedded(b, adStart)
 	}
 
-	end := adStart + fe.LengthOfAllocationDescriptors
-	if end > uint32(len(b)) {
+	end, ok := within(uint32(len(b)), adStart, fe.LengthOfAllocationDescriptors)
+	if !ok {
 		return fmt.Errorf("allocation descriptors: %w", ErrBufferTooShort)
 	}
 
@@ -542,9 +542,17 @@ func (fe *FileEntry) finish(b []byte, header uint32, part uint16) error {
 	return nil
 }
 
+func within(limit, start, n uint32) (uint32, bool) {
+	if start > limit || n > limit-start {
+		return 0, false
+	}
+
+	return start + n, true
+}
+
 func (fe *FileEntry) takeEmbedded(b []byte, adStart uint32) error {
-	end := adStart + fe.LengthOfAllocationDescriptors
-	if end > uint32(len(b)) {
+	_, ok := within(uint32(len(b)), adStart, fe.LengthOfAllocationDescriptors)
+	if !ok {
 		return fmt.Errorf("embedded file data: %w", ErrBufferTooShort)
 	}
 
@@ -618,16 +626,30 @@ func parseOneAD(b []byte, kind uint8, part uint16) (Extent, error) {
 			Partition: long.Partition,
 		}, nil
 	case adExtended:
-		if len(b) < 18 {
-			return Extent{}, fmt.Errorf("extended allocation descriptor: %w", ErrBufferTooShort)
-		}
-
-		return Extent{
-			Length:    rlU32(b[0:]),
-			Location:  rlU32(b[12:]),
-			Partition: rlU16(b[16:]),
-		}, nil
+		return parseExtendedAD(b)
 	default:
 		return Extent{}, fmt.Errorf("allocation descriptor type %d: %w", kind, ErrNoAllocDescriptors)
 	}
+}
+
+func parseExtendedAD(b []byte) (Extent, error) {
+	if len(b) < 18 {
+		return Extent{}, fmt.Errorf("extended allocation descriptor: %w", ErrBufferTooShort)
+	}
+
+	length := rlU32(b[0:])
+	recorded := rlU32(b[4:])
+	info := rlU32(b[8:])
+	data := length & 0x3FFFFFFF
+
+	if recorded != data || info != data {
+		return Extent{}, fmt.Errorf("extended allocation descriptor recorded %d information %d: %w",
+			recorded, info, errCompressedExtent)
+	}
+
+	return Extent{
+		Length:    length,
+		Location:  rlU32(b[12:]),
+		Partition: rlU16(b[16:]),
+	}, nil
 }

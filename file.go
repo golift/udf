@@ -19,26 +19,26 @@ func (f *File) GetFileEntryPosition() int64 {
 	return int64(f.fileEntryPosition)
 }
 
-// GetFileOffset returns the byte offset of this file's data in the image.
+// GetFileOffset returns the image offset of this file's first recorded bytes.
+// Allocation-extent chains are followed, so a file whose top-level descriptor
+// only points at the next descriptor block still resolves.
 func (f *File) GetFileOffset() (int64, error) {
 	fe, err := f.FileEntry()
 	if err != nil {
 		return 0, err
 	}
 
-	for _, ad := range fe.AllocationDescriptors {
-		if ad.ExtentType() != ExtentRecorded || ad.DataLength() == 0 {
+	runs, err := f.Udf.buildRuns(fe)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, run := range runs {
+		if run.hole || run.length == 0 {
 			continue
 		}
 
-		off := int64(ad.Location) * int64(f.Udf.blockSize)
-
-		phys, _, err := f.Udf.translateLogical(ad.Partition, off, int64(ad.DataLength()))
-		if err != nil {
-			return 0, err
-		}
-
-		return phys, nil
+		return run.phys, nil
 	}
 
 	return 0, ErrNoAllocDescriptors
@@ -68,7 +68,7 @@ func (f *File) FileEntry() (*FileEntry, error) {
 
 // NewReader returns a reader for this file's bytes. The reader spans every
 // recorded allocation extent, so fragmented Blu-ray streams read in order.
-func (f *File) NewReader() (io.ReadSeeker, error) {
+func (f *File) NewReader() (*io.SectionReader, error) {
 	fe, err := f.FileEntry()
 	if err != nil {
 		return nil, err
