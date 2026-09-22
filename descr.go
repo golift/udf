@@ -15,7 +15,24 @@ const (
 	descriptorTerminating         = 0x8
 	descriptorFileSet             = 0x100
 	descriptorFileIdentifier      = 0x101
+	descriptorAllocExtent         = 0x102
 	descriptorFileEntry           = 0x105
+	descriptorExtendedFileEntry   = 0x10A
+
+	fidCharDeleted uint8 = 0x04
+	fidCharParent  uint8 = 0x08
+
+	adShort    uint8 = 0
+	adLong     uint8 = 1
+	adExtended uint8 = 2
+	adInICB    uint8 = 3
+
+	// locNotRecorded is the UDF "not specified" block location (all bits set).
+	locNotRecorded uint32 = 0xFFFFFFFF
+
+	fileEntryHeader         = 176
+	extendedFileEntryHeader = 216
+	maxAllocDepth           = 8
 )
 
 // ErrBufferTooShort is returned when a byte slice is too short for parsing.
@@ -229,6 +246,7 @@ type LogicalVolumeDescriptor struct {
 	ImplementationUse              []byte
 	IntegritySequenceExtent        Extent
 	PartitionMaps                  []PartitionMap
+	partMaps                       []partMap
 }
 
 func newLogicalVolumeDescriptor(b []byte) (*LogicalVolumeDescriptor, error) {
@@ -254,13 +272,13 @@ func newLogicalVolumeDescriptor(b []byte) (*LogicalVolumeDescriptor, error) {
 	lvd.ImplementationUse = b[304:432]
 	lvd.IntegritySequenceExtent = NewExtent(b[432:])
 
-	lvd.PartitionMaps = make([]PartitionMap, lvd.NumberOfPartitionMaps)
-	for i := range lvd.PartitionMaps {
-		offset := 440 + i*6
-		if offset+6 <= len(b) {
-			lvd.PartitionMaps[i].fromBytes(b[offset:])
-		}
+	maps, type1, err := parsePartitionMaps(b[440:], lvd.MapTableLength, lvd.NumberOfPartitionMaps)
+	if err != nil {
+		return nil, err
 	}
+
+	lvd.partMaps = maps
+	lvd.PartitionMaps = type1
 
 	return lvd, nil
 }
@@ -389,10 +407,32 @@ type FileEntry struct {
 	LengthOfAllocationDescriptors uint32
 	ExtendedAttributes            []byte
 	AllocationDescriptors         []Extent
+	// ObjectSize is the extended file entry object size. Legacy file entries
+	// report InformationLength here.
+	ObjectSize uint64
+	// CreationTime is set for extended file entries (UDF 2.00 and later).
+	CreationTime time.Time
+	partitionRef uint16
+	embedded     []byte
 }
 
-func newFileEntry(b []byte) (*FileEntry, error) {
-	if len(b) < 176 {
+func parseFileEntry(b []byte, part uint16) (*FileEntry, error) {
+	if len(b) < 16 {
+		return nil, fmt.Errorf("file entry: %w", ErrBufferTooShort)
+	}
+
+	switch rlU16(b) {
+	case descriptorFileEntry:
+		return parseLegacyFileEntry(b, part)
+	case descriptorExtendedFileEntry:
+		return parseExtendedFileEntry(b, part)
+	default:
+		return nil, fmt.Errorf("tag %d: %w", rlU16(b), ErrNoFileEntry)
+	}
+}
+
+func parseLegacyFileEntry(b []byte, part uint16) (*FileEntry, error) {
+	if len(b) < fileEntryHeader {
 		return nil, fmt.Errorf("file entry: %w", ErrBufferTooShort)
 	}
 
@@ -403,15 +443,7 @@ func newFileEntry(b []byte) (*FileEntry, error) {
 		return nil, err
 	}
 
-	fe.ICBTag = NewICBTag(b[16:])
-	fe.UID = rlU32(b[36:])
-	fe.GID = rlU32(b[40:])
-	fe.Permissions = rlU32(b[44:])
-	fe.FileLinkCount = rlU16(b[48:])
-	fe.RecordFormat = rU8(b[50:])
-	fe.RecordDisplayAttributes = rU8(b[51:])
-	fe.RecordLength = rlU32(b[52:])
-	fe.InformationLength = rlU64(b[56:])
+	fe.readICBPrefix(b)
 	fe.LogicalBlocksRecorded = rlU64(b[64:])
 	fe.AccessTime = rTimestamp(b[72:])
 	fe.ModificationTime = rTimestamp(b[84:])
@@ -422,21 +454,180 @@ func newFileEntry(b []byte) (*FileEntry, error) {
 	fe.UniqueID = rlU64(b[160:])
 	fe.LengthOfExtendedAttributes = rlU32(b[168:])
 	fe.LengthOfAllocationDescriptors = rlU32(b[172:])
+	fe.ObjectSize = fe.InformationLength
 
-	allocDescStart := 176 + fe.LengthOfExtendedAttributes
-	if uint32(len(b)) >= allocDescStart {
-		fe.ExtendedAttributes = b[176:allocDescStart]
-	}
-
-	numDescriptors := fe.LengthOfAllocationDescriptors / 8
-	fe.AllocationDescriptors = make([]Extent, numDescriptors)
-
-	for i := range fe.AllocationDescriptors {
-		offset := allocDescStart + uint32(i)*8
-		if offset+8 <= uint32(len(b)) {
-			fe.AllocationDescriptors[i] = NewExtent(b[offset:])
-		}
+	err = fe.finish(b, fileEntryHeader, part)
+	if err != nil {
+		return nil, err
 	}
 
 	return fe, nil
+}
+
+func parseExtendedFileEntry(b []byte, part uint16) (*FileEntry, error) {
+	if len(b) < extendedFileEntryHeader {
+		return nil, fmt.Errorf("extended file entry: %w", ErrBufferTooShort)
+	}
+
+	fe := &FileEntry{}
+
+	err := fe.Descriptor.fromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	fe.readICBPrefix(b)
+	fe.ObjectSize = rlU64(b[64:])
+	fe.LogicalBlocksRecorded = rlU64(b[72:])
+	fe.AccessTime = rTimestamp(b[80:])
+	fe.ModificationTime = rTimestamp(b[92:])
+	fe.CreationTime = rTimestamp(b[104:])
+	fe.AttributeTime = rTimestamp(b[116:])
+	fe.Checkpoint = rlU32(b[128:])
+	fe.ExtendedAttributeICB = NewExtentLong(b[136:])
+	fe.ImplementationIdentifier = NewEntityID(b[168:])
+	fe.UniqueID = rlU64(b[200:])
+	fe.LengthOfExtendedAttributes = rlU32(b[208:])
+	fe.LengthOfAllocationDescriptors = rlU32(b[212:])
+
+	err = fe.finish(b, extendedFileEntryHeader, part)
+	if err != nil {
+		return nil, err
+	}
+
+	return fe, nil
+}
+
+func (fe *FileEntry) readICBPrefix(b []byte) {
+	fe.ICBTag = NewICBTag(b[16:])
+	fe.UID = rlU32(b[36:])
+	fe.GID = rlU32(b[40:])
+	fe.Permissions = rlU32(b[44:])
+	fe.FileLinkCount = rlU16(b[48:])
+	fe.RecordFormat = rU8(b[50:])
+	fe.RecordDisplayAttributes = rU8(b[51:])
+	fe.RecordLength = rlU32(b[52:])
+	fe.InformationLength = rlU64(b[56:])
+}
+
+func (fe *FileEntry) finish(b []byte, header uint32, part uint16) error {
+	fe.partitionRef = part
+
+	adStart := header + fe.LengthOfExtendedAttributes
+	if adStart > uint32(len(b)) {
+		return fmt.Errorf("file entry extended attributes: %w", ErrBufferTooShort)
+	}
+
+	if fe.LengthOfExtendedAttributes > 0 {
+		fe.ExtendedAttributes = b[header:adStart]
+	}
+
+	kind := adTypeOf(fe)
+	if kind == adInICB {
+		return fe.takeEmbedded(b, adStart)
+	}
+
+	end := adStart + fe.LengthOfAllocationDescriptors
+	if end > uint32(len(b)) {
+		return fmt.Errorf("allocation descriptors: %w", ErrBufferTooShort)
+	}
+
+	ads, err := parseAllocBytes(b[adStart:end], kind, part)
+	if err != nil {
+		return err
+	}
+
+	fe.AllocationDescriptors = ads
+
+	return nil
+}
+
+func (fe *FileEntry) takeEmbedded(b []byte, adStart uint32) error {
+	end := adStart + fe.LengthOfAllocationDescriptors
+	if end > uint32(len(b)) {
+		return fmt.Errorf("embedded file data: %w", ErrBufferTooShort)
+	}
+
+	n := fe.LengthOfAllocationDescriptors
+	if fe.InformationLength < uint64(n) {
+		n = uint32(fe.InformationLength)
+	}
+
+	fe.embedded = append([]byte(nil), b[adStart:adStart+n]...)
+
+	return nil
+}
+
+func adTypeOf(fe *FileEntry) uint8 {
+	if fe == nil || fe.ICBTag == nil {
+		return adShort
+	}
+
+	return uint8(fe.ICBTag.Flags & 7)
+}
+
+func parseAllocBytes(b []byte, kind uint8, part uint16) ([]Extent, error) {
+	size, err := adSize(kind)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(b)%size != 0 {
+		return nil, fmt.Errorf("allocation descriptors length %d: %w", len(b), ErrBufferTooShort)
+	}
+
+	ads := make([]Extent, 0, len(b)/size)
+	for off := 0; off < len(b); off += size {
+		ad, err := parseOneAD(b[off:off+size], kind, part)
+		if err != nil {
+			return nil, err
+		}
+
+		ads = append(ads, ad)
+	}
+
+	return ads, nil
+}
+
+func adSize(kind uint8) (int, error) {
+	switch kind {
+	case adShort:
+		return 8, nil
+	case adLong:
+		return 16, nil
+	case adExtended:
+		return 18, nil
+	default:
+		return 0, fmt.Errorf("allocation descriptor type %d: %w", kind, ErrNoAllocDescriptors)
+	}
+}
+
+func parseOneAD(b []byte, kind uint8, part uint16) (Extent, error) {
+	switch kind {
+	case adShort:
+		ext := NewExtent(b)
+		ext.Partition = part
+
+		return ext, nil
+	case adLong:
+		long := NewExtentLong(b)
+
+		return Extent{
+			Length:    long.Length,
+			Location:  uint32(long.Location),
+			Partition: long.Partition,
+		}, nil
+	case adExtended:
+		if len(b) < 18 {
+			return Extent{}, fmt.Errorf("extended allocation descriptor: %w", ErrBufferTooShort)
+		}
+
+		return Extent{
+			Length:    rlU32(b[0:]),
+			Location:  rlU32(b[12:]),
+			Partition: rlU16(b[16:]),
+		}, nil
+	default:
+		return Extent{}, fmt.Errorf("allocation descriptor type %d: %w", kind, ErrNoAllocDescriptors)
+	}
 }

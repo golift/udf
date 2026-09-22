@@ -1,7 +1,6 @@
 package udf
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"time"
@@ -27,16 +26,22 @@ func (f *File) GetFileOffset() (int64, error) {
 		return 0, err
 	}
 
-	if len(fe.AllocationDescriptors) == 0 {
-		return 0, ErrNoAllocDescriptors
+	for _, ad := range fe.AllocationDescriptors {
+		if ad.ExtentType() != ExtentRecorded || ad.DataLength() == 0 {
+			continue
+		}
+
+		off := int64(ad.Location) * int64(f.Udf.blockSize)
+
+		phys, _, err := f.Udf.translateLogical(ad.Partition, off, int64(ad.DataLength()))
+		if err != nil {
+			return 0, err
+		}
+
+		return phys, nil
 	}
 
-	ps, err := f.Udf.PartitionStart()
-	if err != nil {
-		return 0, err
-	}
-
-	return SectorSize * (int64(fe.AllocationDescriptors[0].Location) + int64(ps)), nil
+	return 0, ErrNoAllocDescriptors
 }
 
 // FileEntry returns the parsed FileEntry, loading it on first access.
@@ -45,19 +50,15 @@ func (f *File) FileEntry() (*FileEntry, error) {
 		return f.fe, nil
 	}
 
-	ps, err := f.Udf.PartitionStart()
-	if err != nil {
-		return nil, err
+	if f.Fid == nil {
+		return nil, ErrNoFileEntry
 	}
 
 	f.fileEntryPosition = f.Fid.ICB.Location
 
-	buf, err := f.Udf.ReadSector(ps + f.fileEntryPosition)
-	if err != nil {
-		return nil, fmt.Errorf("reading file entry: %w", err)
-	}
+	var err error
 
-	f.fe, err = newFileEntry(buf)
+	f.fe, err = f.Udf.readFileEntry(f.Fid.ICB.Partition, uint32(f.Fid.ICB.Location))
 	if err != nil {
 		return nil, err
 	}
@@ -65,14 +66,15 @@ func (f *File) FileEntry() (*FileEntry, error) {
 	return f.fe, nil
 }
 
-// NewReader returns a SectionReader for this file's data.
-func (f *File) NewReader() (*io.SectionReader, error) {
-	offset, err := f.GetFileOffset()
+// NewReader returns a reader for this file's bytes. The reader spans every
+// recorded allocation extent, so fragmented Blu-ray streams read in order.
+func (f *File) NewReader() (io.ReadSeeker, error) {
+	fe, err := f.FileEntry()
 	if err != nil {
 		return nil, err
 	}
 
-	return io.NewSectionReader(f.Udf.r, offset, f.Size()), nil
+	return f.Udf.open(fe)
 }
 
 // Name returns the file's name.
