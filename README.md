@@ -5,6 +5,7 @@ Go Library for reading UDF (Universal Disc Format) filesystem images.
 -   [GoDoc](https://pkg.go.dev/golift.io/udf)
 -   Works on Linux, Windows, FreeBSD and macOS **without Cgo**.
 -   Parses UDF volume structures per ECMA-167.
+-   Reads UDF 2.50 and 2.60 metadata partitions (Blu-ray), extended file entries, and long allocation descriptors.
 -   Returns errors instead of panicking.
 
 Forked from [mogaika/udf](https://github.com/mogaika/udf) with bug fixes,

@@ -112,6 +112,20 @@ func TestNewExtentLongTooShort(t *testing.T) {
 	}
 }
 
+func TestNewExtentLongPartition(t *testing.T) {
+	t.Parallel()
+
+	buf := make([]byte, 16)
+	binary.LittleEndian.PutUint32(buf[0:], 100)
+	binary.LittleEndian.PutUint32(buf[4:], 50)
+	binary.LittleEndian.PutUint16(buf[8:], 1)
+
+	ext := udf.NewExtentLong(buf)
+	if ext.Length != 100 || ext.Location != 50 || ext.Partition != 1 {
+		t.Errorf("extent = %+v, want length 100 location 50 partition 1", ext)
+	}
+}
+
 func TestNewEntityIDTooShort(t *testing.T) {
 	t.Parallel()
 

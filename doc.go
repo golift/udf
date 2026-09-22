@@ -1,5 +1,5 @@
 // Package udf provides a reader for UDF (Universal Disc Format) filesystem
-// images per ECMA-167. It parses UDF volume structures, partition descriptors,
-// and file entries, allowing callers to list and read files from ISO images
-// that use the UDF format.
+// images per ECMA-167 and OSTA UDF 1.02 through 2.60. It reads type 1
+// partitions and the UDF 2.50/2.60 metadata partition used by Blu-ray,
+// including extended file entries and long allocation descriptors.
 package udf

@@ -1,5 +1,7 @@
 package udf
 
+import "strings"
+
 // EntityID represents a UDF Entity Identifier (ECMA-167 §7.4).
 type EntityID struct {
 	Flags            uint8
@@ -19,4 +21,9 @@ func NewEntityID(b []byte) EntityID {
 	copy(e.IdentifierSuffix[:], b[24:32])
 
 	return e
+}
+
+// Name returns the identifier string with trailing NULs and spaces removed.
+func (e EntityID) Name() string {
+	return strings.TrimRight(string(e.Identifier[:]), " \x00")
 }
