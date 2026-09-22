@@ -5,7 +5,9 @@ linters:
     # unused
     - nlreturn
     - exhaustruct
+    - exhaustruct_v5
     - depguard
+    - gomodguard
     - nonamedreturns
     - forbidigo
     - wsl
