@@ -1,4 +1,6 @@
 // Package main provides a simple CLI tool to list files in a UDF image.
+//
+//nolint:forbidigo // It's a cli tool that prints to the terminal.
 package main
 
 import (
@@ -30,7 +32,7 @@ func run() error {
 	flag.Parse()
 
 	if flag.NArg() == 0 {
-		return errors.New("usage: isoinfo <file.iso>") //nolint:err113
+		return errors.New("usage: isoinfo <file.iso>") //nolint:err113 // not a library.
 	}
 
 	rdr, err := os.Open(flag.Arg(0))

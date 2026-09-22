@@ -2,24 +2,15 @@ version: '2'
 linters:
   default: all
   disable:
-    # unused
-    - nlreturn
-    - exhaustruct
-    - depguard
-    - nonamedreturns
-    - forbidigo
-    - wsl
+    - nlreturn # wsl_v5 is good enough.
+    - depguard # not very useful.
+    - exhaustruct # deprecated
+    - wsl # deprecated
+    - gomodguard # deprecated
     # too noisy for a binary format parser
     - mnd
     - varnamelen
-  exclusions:
-    rules:
-      - linters:
-          - funlen
-          - goconst
-          - wsl
-          - errcheck
-        path: .+_test.go
+    - exhaustruct_v5
 
   settings:
     gosec:
@@ -30,9 +21,6 @@ linters:
         - G705
     gocritic:
       enable-all: true
-      disabled-checks:
-        - whyNoLint
-        - commentedOutCode
       settings:
         unnamedResult:
           checkExported: true
@@ -47,7 +35,6 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  fix: true
 formatters:
   enable:
     - gci
