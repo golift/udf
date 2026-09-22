@@ -318,8 +318,9 @@ func (r *extentReader) readFrom(p []byte, off int64) (int, error) {
 }
 
 func runAt(runs []byteRun, off int64) (byteRun, bool) {
-	// Runs are ordered by fileOff. Binary search keeps a sequential read of a
-	// fragmented file at O(N log N) run checks instead of O(N²).
+	// sort.Find compares the target with entry i: positive when off is past
+	// this run, negative when off is still before it. gap.bin's third extent
+	// depends on that order.
 	i, found := sort.Find(len(runs), func(i int) int {
 		run := runs[i]
 		if off < run.fileOff {

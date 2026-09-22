@@ -39,6 +39,7 @@ func TestPhysicalImage(t *testing.T) {
 	assertContents(t, files["cont.txt"], "cont")
 	assertContents(t, files["span.txt"], "span")
 	assertContents(t, files["xcont.txt"], "xcon")
+	assertContents(t, files["xhole.txt"], "AB\x00\x00CD")
 	assertOffset(t, files["cont.txt"], int64((partStart+7)*sectorSize))
 	assertOpenError(t, files["over.txt"])
 }
@@ -359,6 +360,7 @@ func buildPhysicalImage() []byte {
 	fids = appendFID(fids, "span.txt", 9, 0, 0)
 	fids = appendFID(fids, "over.txt", 8, 0, 0)
 	fids = appendFID(fids, "xcont.txt", 12, 0, 0)
+	fids = appendFID(fids, "xhole.txt", 15, 0, 0)
 
 	placePart(img, 0, writeFSD(1, 0))
 	placePart(img, 1, writeFE(4, uint64(len(fids)), []ext{{length: uint32(len(fids)), lbn: 2}}))
@@ -374,6 +376,13 @@ func buildPhysicalImage() []byte {
 	placePart(img, 12, writeEFE(5, 2, 4, []ext{{length: 44 | extNext, lbn: 13, part: 0}}))
 	placePart(img, 13, writeExtAED(4, 14, 0))
 	placePart(img, 14, payloadSector([]byte("xcon")))
+	placePart(img, 15, writeEFE(5, 2, 6, []ext{
+		{length: 2, lbn: 16, part: 0},
+		{length: 2 | extHole, lbn: 0, part: 0},
+		{length: 2, lbn: 17, part: 0},
+	}))
+	placePart(img, 16, payloadSector([]byte("AB")))
+	placePart(img, 17, payloadSector([]byte("CD")))
 
 	return img
 }
@@ -622,7 +631,10 @@ func putExtAD(b []byte, length, lbn uint32, part uint16) {
 	recorded := data
 	info := data
 
-	if length>>30 == 3 {
+	switch length >> 30 {
+	case 1, 2:
+		recorded = 0
+	case 3:
 		recorded = 0
 		info = 0
 	}

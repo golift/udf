@@ -34,7 +34,10 @@ const (
 	// locNotRecorded is the UDF "not specified" block location (all bits set).
 	locNotRecorded uint32 = 0xFFFFFFFF
 
-	fileEntryHeader         = 176
+	fileEntryHeader = 176
+	// extendedFileEntryHeader is ECMA-167 4/14.17. Byte 128 is the checkpoint,
+	// then a reserved uint32 and two long_ads (extended-attribute ICB and
+	// stream-directory ICB). Allocation descriptors therefore start at 216.
 	extendedFileEntryHeader = 216
 	maxAllocDepth           = 8
 )
@@ -646,11 +649,9 @@ func parseExtendedAD(b []byte) (Extent, error) {
 	info := rlU32(b[8:])
 	data := length & 0x3FFFFFFF
 
-	// A type-3 descriptor points at the next allocation extent. Its recorded
-	// and information lengths are zero; the extent length is the block size.
-	if length>>30 != ExtentNextDescriptors && (recorded != data || info != data) {
-		return Extent{}, fmt.Errorf("extended allocation descriptor recorded %d information %d: %w",
-			recorded, info, errCompressedExtent)
+	err := checkExtendedLengths(length>>30, recorded, info, data)
+	if err != nil {
+		return Extent{}, err
 	}
 
 	return Extent{
@@ -658,4 +659,28 @@ func parseExtendedAD(b []byte) (Extent, error) {
 		Location:  rlU32(b[12:]),
 		Partition: rlU16(b[16:]),
 	}, nil
+}
+
+func checkExtendedLengths(kind, recorded, info, data uint32) error {
+	var ok bool
+
+	switch kind {
+	case ExtentNextDescriptors:
+		ok = true
+	case ExtentRecorded:
+		ok = recorded == data && info == data
+	case ExtentAllocated, ExtentUnallocated:
+		// Unrecorded extents are holes: nothing was stored, and the
+		// information length is the number of zero bytes to insert.
+		ok = recorded == 0 && info == data
+	default:
+		return fmt.Errorf("extended allocation descriptor type %d: %w", kind, ErrNoAllocDescriptors)
+	}
+
+	if ok {
+		return nil
+	}
+
+	return fmt.Errorf("extended allocation descriptor recorded %d information %d: %w",
+		recorded, info, errCompressedExtent)
 }
