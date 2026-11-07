@@ -10,6 +10,13 @@ import (
 // SectorSize is the standard UDF sector size in bytes.
 const SectorSize = 2048
 
+const (
+	pvIdentifierOffset = 24
+	pvIdentifierLength = 32
+	lvIdentifierOffset = 84
+	lvIdentifierLength = 128
+)
+
 // Udf represents a parsed UDF filesystem image.
 type Udf struct {
 	r         io.ReaderAt
@@ -26,6 +33,7 @@ type Udf struct {
 // Errors returned by this package.
 var (
 	ErrNoPartition          = errors.New("no partition descriptor found")
+	ErrNoPrimaryVolume      = errors.New("no primary volume descriptor found")
 	ErrNoLogicalVolume      = errors.New("no logical volume descriptor found")
 	ErrNoFileEntry          = errors.New("no file entry provided and no root file entry")
 	ErrNoAllocDescriptors   = errors.New("file entry has no allocation descriptors")
@@ -70,6 +78,36 @@ func (u *Udf) PartitionStart() (uint64, error) {
 	}
 
 	return uint64(u.pd.PartitionStartingLocation), nil
+}
+
+// VolumeIdentifier returns the decoded primary volume identifier.
+// An empty identifier is returned as an empty string.
+func (u *Udf) VolumeIdentifier() (string, error) {
+	if u.pvd == nil {
+		return "", ErrNoPrimaryVolume
+	}
+
+	field := u.pvd.Descriptor.data[pvIdentifierOffset : pvIdentifierOffset+pvIdentifierLength]
+	id, err := decodeVolumeIdentifier(field)
+	if err != nil {
+		return "", fmt.Errorf("primary volume identifier: %w", err)
+	}
+	return id, nil
+}
+
+// LogicalVolumeIdentifier returns the decoded logical volume identifier.
+// An empty identifier is returned as an empty string.
+func (u *Udf) LogicalVolumeIdentifier() (string, error) {
+	if u.lvd == nil {
+		return "", ErrNoLogicalVolume
+	}
+
+	field := u.lvd.Descriptor.data[lvIdentifierOffset : lvIdentifierOffset+lvIdentifierLength]
+	id, err := decodeVolumeIdentifier(field)
+	if err != nil {
+		return "", fmt.Errorf("logical volume identifier: %w", err)
+	}
+	return id, nil
 }
 
 // GetReader returns the underlying io.ReaderAt.
