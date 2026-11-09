@@ -10,6 +10,13 @@ import (
 // SectorSize is the standard UDF sector size in bytes.
 const SectorSize = 2048
 
+const (
+	pvIdentifierOffset = 24
+	pvIdentifierLength = 32
+	lvIdentifierOffset = 84
+	lvIdentifierLength = 128
+)
+
 // Udf represents a parsed UDF filesystem image.
 type Udf struct {
 	r         io.ReaderAt
@@ -25,23 +32,28 @@ type Udf struct {
 
 // Errors returned by this package.
 var (
-	ErrNoPartition          = errors.New("no partition descriptor found")
-	ErrNoLogicalVolume      = errors.New("no logical volume descriptor found")
-	ErrNoFileEntry          = errors.New("no file entry provided and no root file entry")
-	ErrNoAllocDescriptors   = errors.New("file entry has no allocation descriptors")
-	ErrBadAnchorTag         = errors.New("unexpected anchor volume pointer tag")
-	ErrShortRead            = errors.New("short read")
-	ErrUnsupportedPartition = errors.New("unsupported UDF partition map")
-	errVDSNotTerminated     = errors.New("volume descriptor sequence is not terminated")
-	errBadBlockSize         = errors.New("unsupported logical block size")
-	errBadFIDTag            = errors.New("unexpected file identifier tag")
-	errBadFSDTag            = errors.New("unexpected file set descriptor tag")
-	errDirectoryTooLarge    = errors.New("directory exceeds size limit")
-	errBadSeek              = errors.New("invalid seek")
-	errOutsidePartition     = errors.New("extent exceeds partition length")
-	errFileEntryTooLarge    = errors.New("file entry exceeds size limit")
-	errAllocTooLarge        = errors.New("allocation extent exceeds size limit")
-	errCompressedExtent     = errors.New("compressed extents are not supported")
+	ErrNoPartition                   = errors.New("no partition descriptor found")
+	ErrNoPrimaryVolume               = errors.New("no primary volume descriptor found")
+	ErrNoLogicalVolume               = errors.New("no logical volume descriptor found")
+	ErrNoFileEntry                   = errors.New("no file entry provided and no root file entry")
+	ErrNoAllocDescriptors            = errors.New("file entry has no allocation descriptors")
+	ErrBadAnchorTag                  = errors.New("unexpected anchor volume pointer tag")
+	ErrShortRead                     = errors.New("short read")
+	ErrUnsupportedPartition          = errors.New("unsupported UDF partition map")
+	ErrInvalidDStringLength          = errors.New("invalid d-string length")
+	ErrUnsupportedDStringCompression = errors.New("unsupported d-string compression ID")
+	ErrOddDString16Length            = errors.New("odd-length 16-bit d-string")
+	ErrInvalidSurrogatePair          = errors.New("invalid UTF-16 surrogate pair")
+	errVDSNotTerminated              = errors.New("volume descriptor sequence is not terminated")
+	errBadBlockSize                  = errors.New("unsupported logical block size")
+	errBadFIDTag                     = errors.New("unexpected file identifier tag")
+	errBadFSDTag                     = errors.New("unexpected file set descriptor tag")
+	errDirectoryTooLarge             = errors.New("directory exceeds size limit")
+	errBadSeek                       = errors.New("invalid seek")
+	errOutsidePartition              = errors.New("extent exceeds partition length")
+	errFileEntryTooLarge             = errors.New("file entry exceeds size limit")
+	errAllocTooLarge                 = errors.New("allocation extent exceeds size limit")
+	errCompressedExtent              = errors.New("compressed extents are not supported")
 )
 
 // ErrNilReader is returned when a nil io.ReaderAt is passed to NewUdfFromReader.
@@ -70,6 +82,36 @@ func (u *Udf) PartitionStart() (uint64, error) {
 	}
 
 	return uint64(u.pd.PartitionStartingLocation), nil
+}
+
+// VolumeIdentifier returns the decoded primary volume identifier.
+// An empty identifier is returned as an empty string.
+func (u *Udf) VolumeIdentifier() (string, error) {
+	if u.pvd == nil {
+		return "", ErrNoPrimaryVolume
+	}
+
+	field := u.pvd.Descriptor.data[pvIdentifierOffset : pvIdentifierOffset+pvIdentifierLength]
+	id, err := decodeVolumeIdentifier(field)
+	if err != nil {
+		return "", fmt.Errorf("primary volume identifier: %w", err)
+	}
+	return id, nil
+}
+
+// LogicalVolumeIdentifier returns the decoded logical volume identifier.
+// An empty identifier is returned as an empty string.
+func (u *Udf) LogicalVolumeIdentifier() (string, error) {
+	if u.lvd == nil {
+		return "", ErrNoLogicalVolume
+	}
+
+	field := u.lvd.Descriptor.data[lvIdentifierOffset : lvIdentifierOffset+lvIdentifierLength]
+	id, err := decodeVolumeIdentifier(field)
+	if err != nil {
+		return "", fmt.Errorf("logical volume identifier: %w", err)
+	}
+	return id, nil
 }
 
 // GetReader returns the underlying io.ReaderAt.

@@ -3,6 +3,7 @@ package udf_test
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 
@@ -162,4 +163,140 @@ func TestPartitionStartNoPartition(t *testing.T) {
 	if !strings.Contains(err.Error(), "anchor") {
 		t.Errorf("unexpected error: %v", err)
 	}
+}
+
+func TestVolumeIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		primary     []byte
+		logical     []byte
+		wantPrimary string
+		wantLogical string
+		primaryErr  error
+		logicalErr  error
+	}{
+		{name: "empty"},
+		{
+			name:        "8-bit",
+			primary:     []byte{8, 'D', 'V', 'D', 0xE9},
+			logical:     []byte{8, 'M', 'O', 'V', 'I', 'E'},
+			wantPrimary: "DVDé",
+			wantLogical: "MOVIE",
+		},
+		{
+			name:        "16-bit",
+			primary:     []byte{16, 0x65, 0xe5, 0x67, 0x2c},
+			logical:     []byte{16, 0xd8, 0x3d, 0xde, 0x80},
+			wantPrimary: "\u65E5\u672C",
+			wantLogical: "🚀",
+		},
+		{
+			name:        "literal replacement character",
+			primary:     []byte{16, 0xff, 0xfd},
+			logical:     []byte{16, 0xff, 0xfd},
+			wantPrimary: "\uFFFD",
+			wantLogical: "\uFFFD",
+		},
+		{
+			name:       "unknown compression",
+			primary:    []byte{7, 'A'},
+			logical:    []byte{7, 'A'},
+			primaryErr: udf.ErrUnsupportedDStringCompression,
+			logicalErr: udf.ErrUnsupportedDStringCompression,
+		},
+		{
+			name:       "odd 16-bit string",
+			primary:    []byte{16, 0, 'A', 0},
+			logical:    []byte{16, 0, 'A', 0},
+			primaryErr: udf.ErrOddDString16Length,
+			logicalErr: udf.ErrOddDString16Length,
+		},
+		{
+			name:       "invalid surrogate",
+			primary:    []byte{16, 0xd8, 0x00},
+			logical:    []byte{16, 0xd8, 0x00},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+		{
+			name:       "unpaired low surrogate",
+			primary:    []byte{16, 0xdc, 0x00},
+			logical:    []byte{16, 0xdc, 0x00},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+		{
+			name:       "invalid surrogate successor",
+			primary:    []byte{16, 0xd8, 0x00, 0, 'A'},
+			logical:    []byte{16, 0xd8, 0x00, 0, 'A'},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+		{
+			name:       "low surrogate before high surrogate",
+			primary:    []byte{16, 0xdc, 0x00, 0xd8, 0x00},
+			logical:    []byte{16, 0xdc, 0x00, 0xd8, 0x00},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			image := buildPhysicalImage()
+			writeVolumeDString(image[vdsSector*sectorSize+24:vdsSector*sectorSize+56], tt.primary)
+			writeVolumeDString(image[(vdsSector+2)*sectorSize+84:(vdsSector+2)*sectorSize+212], tt.logical)
+			volume, err := udf.NewUdfFromReader(bytes.NewReader(image))
+			if err != nil {
+				t.Fatal(err)
+			}
+			primary, err := volume.VolumeIdentifier()
+			if !errors.Is(err, tt.primaryErr) || primary != tt.wantPrimary {
+				t.Errorf("VolumeIdentifier() = %q, %v; want %q, error=%v", primary, err, tt.wantPrimary, tt.primaryErr)
+			}
+			logical, err := volume.LogicalVolumeIdentifier()
+			if !errors.Is(err, tt.logicalErr) || logical != tt.wantLogical {
+				t.Errorf("LogicalVolumeIdentifier() = %q, %v; want %q, error=%v", logical, err, tt.wantLogical, tt.logicalErr)
+			}
+		})
+	}
+}
+
+func TestVolumeIdentifierErrors(t *testing.T) {
+	t.Parallel()
+
+	image := buildPhysicalImage()
+	binary.LittleEndian.PutUint16(image[vdsSector*sectorSize:], 0)
+	volume, err := udf.NewUdfFromReader(bytes.NewReader(image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = volume.VolumeIdentifier()
+	if !errors.Is(err, udf.ErrNoPrimaryVolume) {
+		t.Errorf("missing primary descriptor: %v", err)
+	}
+	_, err = new(udf.Udf).LogicalVolumeIdentifier()
+	if !errors.Is(err, udf.ErrNoLogicalVolume) {
+		t.Errorf("missing logical descriptor: %v", err)
+	}
+
+	image = buildPhysicalImage()
+	image[vdsSector*sectorSize+55] = 32
+	volume, err = udf.NewUdfFromReader(bytes.NewReader(image))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = volume.VolumeIdentifier()
+	if !errors.Is(err, udf.ErrInvalidDStringLength) {
+		t.Errorf("expected invalid primary d-string length: %v", err)
+	}
+}
+
+func writeVolumeDString(field, encoded []byte) {
+	clear(field)
+	copy(field, encoded)
+	field[len(field)-1] = byte(len(encoded))
 }

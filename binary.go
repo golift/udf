@@ -2,7 +2,9 @@ package udf
 
 import (
 	"encoding/binary"
+	"fmt"
 	"time"
+	"unicode/utf16"
 
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/unicode"
@@ -36,6 +38,57 @@ func rDstring(b []byte, fieldlen int) string {
 	}
 
 	return string(b[:length])
+}
+
+func decodeVolumeIdentifier(field []byte) (string, error) {
+	length := int(field[len(field)-1])
+	if length == 0 {
+		return "", nil
+	}
+	if length >= len(field) {
+		return "", fmt.Errorf("d-string length %d: %w", length, ErrInvalidDStringLength)
+	}
+
+	data := field[1:length]
+	switch field[0] {
+	case 8:
+		return decodeDString8(data), nil
+	case 16:
+		return decodeDString16(data)
+	default:
+		return "", fmt.Errorf("d-string compression ID %d: %w", field[0], ErrUnsupportedDStringCompression)
+	}
+}
+
+func decodeDString8(data []byte) string {
+	runes := make([]rune, len(data))
+	for i, b := range data {
+		runes[i] = rune(b)
+	}
+	return string(runes)
+}
+
+func decodeDString16(data []byte) (string, error) {
+	const replacementChar = '\uFFFD'
+
+	if len(data)%2 != 0 {
+		return "", ErrOddDString16Length
+	}
+	units := make([]uint16, len(data)/2)
+	for i := range units {
+		units[i] = binary.BigEndian.Uint16(data[i*2:])
+	}
+	for i := 0; i < len(units); i++ {
+		if !utf16.IsSurrogate(rune(units[i])) {
+			continue
+		}
+		if i+1 == len(units) ||
+			utf16.DecodeRune(rune(units[i]), rune(units[i+1])) == replacementChar {
+			return "", ErrInvalidSurrogatePair
+		}
+		i++
+	}
+	return string(utf16.Decode(units)), nil
 }
 
 func rDcharacters(b []byte) string {
