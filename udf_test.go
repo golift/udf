@@ -165,6 +165,7 @@ func TestPartitionStartNoPartition(t *testing.T) {
 	}
 }
 
+//nolint:funlen // one case per d-string failure mode
 func TestVolumeIdentifiers(t *testing.T) {
 	t.Parallel()
 
@@ -249,14 +250,17 @@ func TestVolumeIdentifiers(t *testing.T) {
 			image := buildPhysicalImage()
 			writeVolumeDString(image[vdsSector*sectorSize+24:vdsSector*sectorSize+56], tt.primary)
 			writeVolumeDString(image[(vdsSector+2)*sectorSize+84:(vdsSector+2)*sectorSize+212], tt.logical)
+
 			volume, err := udf.NewUdfFromReader(bytes.NewReader(image))
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			primary, err := volume.VolumeIdentifier()
 			if !errors.Is(err, tt.primaryErr) || primary != tt.wantPrimary {
 				t.Errorf("VolumeIdentifier() = %q, %v; want %q, error=%v", primary, err, tt.wantPrimary, tt.primaryErr)
 			}
+
 			logical, err := volume.LogicalVolumeIdentifier()
 			if !errors.Is(err, tt.logicalErr) || logical != tt.wantLogical {
 				t.Errorf("LogicalVolumeIdentifier() = %q, %v; want %q, error=%v", logical, err, tt.wantLogical, tt.logicalErr)
@@ -270,14 +274,17 @@ func TestVolumeIdentifierErrors(t *testing.T) {
 
 	image := buildPhysicalImage()
 	binary.LittleEndian.PutUint16(image[vdsSector*sectorSize:], 0)
+
 	volume, err := udf.NewUdfFromReader(bytes.NewReader(image))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, err = volume.VolumeIdentifier()
 	if !errors.Is(err, udf.ErrNoPrimaryVolume) {
 		t.Errorf("missing primary descriptor: %v", err)
 	}
+
 	_, err = new(udf.Udf).LogicalVolumeIdentifier()
 	if !errors.Is(err, udf.ErrNoLogicalVolume) {
 		t.Errorf("missing logical descriptor: %v", err)
@@ -285,10 +292,12 @@ func TestVolumeIdentifierErrors(t *testing.T) {
 
 	image = buildPhysicalImage()
 	image[vdsSector*sectorSize+55] = 32
+
 	volume, err = udf.NewUdfFromReader(bytes.NewReader(image))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, err = volume.VolumeIdentifier()
 	if !errors.Is(err, udf.ErrInvalidDStringLength) {
 		t.Errorf("expected invalid primary d-string length: %v", err)
