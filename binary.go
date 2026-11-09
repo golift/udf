@@ -45,6 +45,7 @@ func decodeVolumeIdentifier(field []byte) (string, error) {
 	if length == 0 {
 		return "", nil
 	}
+
 	if length >= len(field) {
 		return "", fmt.Errorf("d-string length %d: %w", length, ErrInvalidDStringLength)
 	}
@@ -65,6 +66,7 @@ func decodeDString8(data []byte) string {
 	for i, b := range data {
 		runes[i] = rune(b)
 	}
+
 	return string(runes)
 }
 
@@ -74,20 +76,25 @@ func decodeDString16(data []byte) (string, error) {
 	if len(data)%2 != 0 {
 		return "", ErrOddDString16Length
 	}
+
 	units := make([]uint16, len(data)/2)
 	for i := range units {
 		units[i] = binary.BigEndian.Uint16(data[i*2:])
 	}
+
 	for i := 0; i < len(units); i++ {
 		if !utf16.IsSurrogate(rune(units[i])) {
 			continue
 		}
+
 		if i+1 == len(units) ||
 			utf16.DecodeRune(rune(units[i]), rune(units[i+1])) == replacementChar {
 			return "", ErrInvalidSurrogatePair
 		}
+
 		i++
 	}
+
 	return string(utf16.Decode(units)), nil
 }
 

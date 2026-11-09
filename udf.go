@@ -92,10 +92,12 @@ func (u *Udf) VolumeIdentifier() (string, error) {
 	}
 
 	field := u.pvd.Descriptor.data[pvIdentifierOffset : pvIdentifierOffset+pvIdentifierLength]
+
 	id, err := decodeVolumeIdentifier(field)
 	if err != nil {
 		return "", fmt.Errorf("primary volume identifier: %w", err)
 	}
+
 	return id, nil
 }
 
@@ -107,10 +109,12 @@ func (u *Udf) LogicalVolumeIdentifier() (string, error) {
 	}
 
 	field := u.lvd.Descriptor.data[lvIdentifierOffset : lvIdentifierOffset+lvIdentifierLength]
+
 	id, err := decodeVolumeIdentifier(field)
 	if err != nil {
 		return "", fmt.Errorf("logical volume identifier: %w", err)
 	}
+
 	return id, nil
 }
 
