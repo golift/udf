@@ -172,16 +172,19 @@ func TestVolumeIdentifiers(t *testing.T) {
 		logical     []byte
 		wantPrimary string
 		wantLogical string
-		primaryErr  bool
-		logicalErr  bool
+		primaryErr  error
+		logicalErr  error
 	}{
 		{name: "empty"},
 		{name: "8-bit", primary: []byte{8, 'D', 'V', 'D', 0xE9}, logical: []byte{8, 'M', 'O', 'V', 'I', 'E'}, wantPrimary: "DVDé", wantLogical: "MOVIE"},
 		{name: "16-bit", primary: []byte{16, 0x65, 0xe5, 0x67, 0x2c}, logical: []byte{16, 0xd8, 0x3d, 0xde, 0x80}, wantPrimary: "日本", wantLogical: "🚀"},
-		{name: "unknown compression", primary: []byte{7, 'A'}, primaryErr: true},
-		{name: "odd 16-bit string", logical: []byte{16, 0, 'A', 0}, logicalErr: true},
-		{name: "invalid surrogate", primary: []byte{16, 0xd8, 0x00}, primaryErr: true},
-		{name: "unpaired low surrogate", primary: []byte{16, 0xdc, 0x00}, primaryErr: true},
+		{name: "literal replacement character", primary: []byte{16, 0xff, 0xfd}, logical: []byte{16, 0xff, 0xfd}, wantPrimary: "\uFFFD", wantLogical: "\uFFFD"},
+		{name: "unknown compression", primary: []byte{7, 'A'}, logical: []byte{7, 'A'}, primaryErr: udf.ErrUnsupportedDStringCompression, logicalErr: udf.ErrUnsupportedDStringCompression},
+		{name: "odd 16-bit string", primary: []byte{16, 0, 'A', 0}, logical: []byte{16, 0, 'A', 0}, primaryErr: udf.ErrOddDString16Length, logicalErr: udf.ErrOddDString16Length},
+		{name: "invalid surrogate", primary: []byte{16, 0xd8, 0x00}, logical: []byte{16, 0xd8, 0x00}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
+		{name: "unpaired low surrogate", primary: []byte{16, 0xdc, 0x00}, logical: []byte{16, 0xdc, 0x00}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
+		{name: "invalid surrogate successor", primary: []byte{16, 0xd8, 0x00, 0, 'A'}, logical: []byte{16, 0xd8, 0x00, 0, 'A'}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
+		{name: "low surrogate before high surrogate", primary: []byte{16, 0xdc, 0x00, 0xd8, 0x00}, logical: []byte{16, 0xdc, 0x00, 0xd8, 0x00}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,11 +196,11 @@ func TestVolumeIdentifiers(t *testing.T) {
 				t.Fatal(err)
 			}
 			primary, err := volume.VolumeIdentifier()
-			if (err != nil) != tt.primaryErr || primary != tt.wantPrimary {
+			if !errors.Is(err, tt.primaryErr) || primary != tt.wantPrimary {
 				t.Errorf("VolumeIdentifier() = %q, %v; want %q, error=%v", primary, err, tt.wantPrimary, tt.primaryErr)
 			}
 			logical, err := volume.LogicalVolumeIdentifier()
-			if (err != nil) != tt.logicalErr || logical != tt.wantLogical {
+			if !errors.Is(err, tt.logicalErr) || logical != tt.wantLogical {
 				t.Errorf("LogicalVolumeIdentifier() = %q, %v; want %q, error=%v", logical, err, tt.wantLogical, tt.logicalErr)
 			}
 		})
@@ -224,8 +227,8 @@ func TestVolumeIdentifierErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := volume.VolumeIdentifier(); err == nil {
-		t.Error("expected error for invalid d-string length")
+	if _, err := volume.VolumeIdentifier(); !errors.Is(err, udf.ErrInvalidDStringLength) {
+		t.Errorf("expected invalid primary d-string length: %v", err)
 	}
 }
 

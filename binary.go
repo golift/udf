@@ -46,39 +46,49 @@ func decodeVolumeIdentifier(field []byte) (string, error) {
 		return "", nil
 	}
 	if length >= len(field) {
-		return "", fmt.Errorf("invalid d-string length %d", length)
+		return "", fmt.Errorf("d-string length %d: %w", length, ErrInvalidDStringLength)
 	}
 
 	data := field[1:length]
 	switch field[0] {
 	case 8:
-		runes := make([]rune, len(data))
-		for i, b := range data {
-			runes[i] = rune(b)
-		}
-		return string(runes), nil
+		return decodeDString8(data), nil
 	case 16:
-		if len(data)%2 != 0 {
-			return "", fmt.Errorf("odd-length 16-bit d-string")
-		}
-		units := make([]uint16, len(data)/2)
-		for i := range units {
-			units[i] = binary.BigEndian.Uint16(data[i*2:])
-		}
-		for i := 0; i < len(units); i++ {
-			if units[i] >= 0xD800 && units[i] <= 0xDBFF {
-				if i+1 == len(units) || units[i+1] < 0xDC00 || units[i+1] > 0xDFFF {
-					return "", fmt.Errorf("invalid UTF-16 surrogate pair")
-				}
-				i++
-			} else if units[i] >= 0xDC00 && units[i] <= 0xDFFF {
-				return "", fmt.Errorf("invalid UTF-16 surrogate pair")
-			}
-		}
-		return string(utf16.Decode(units)), nil
+		return decodeDString16(data)
 	default:
-		return "", fmt.Errorf("unsupported d-string compression ID %d", field[0])
+		return "", fmt.Errorf("d-string compression ID %d: %w", field[0], ErrUnsupportedDStringCompression)
 	}
+}
+
+func decodeDString8(data []byte) string {
+	runes := make([]rune, len(data))
+	for i, b := range data {
+		runes[i] = rune(b)
+	}
+	return string(runes)
+}
+
+func decodeDString16(data []byte) (string, error) {
+	const replacementChar = '\uFFFD'
+
+	if len(data)%2 != 0 {
+		return "", ErrOddDString16Length
+	}
+	units := make([]uint16, len(data)/2)
+	for i := range units {
+		units[i] = binary.BigEndian.Uint16(data[i*2:])
+	}
+	for i := 0; i < len(units); i++ {
+		if !utf16.IsSurrogate(rune(units[i])) {
+			continue
+		}
+		if i+1 == len(units) ||
+			utf16.DecodeRune(rune(units[i]), rune(units[i+1])) == replacementChar {
+			return "", ErrInvalidSurrogatePair
+		}
+		i++
+	}
+	return string(utf16.Decode(units)), nil
 }
 
 func rDcharacters(b []byte) string {
