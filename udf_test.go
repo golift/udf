@@ -220,10 +220,12 @@ func TestVolumeIdentifierErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := volume.VolumeIdentifier(); !errors.Is(err, udf.ErrNoPrimaryVolume) {
+	_, err = volume.VolumeIdentifier()
+	if !errors.Is(err, udf.ErrNoPrimaryVolume) {
 		t.Errorf("missing primary descriptor: %v", err)
 	}
-	if _, err := new(udf.Udf).LogicalVolumeIdentifier(); !errors.Is(err, udf.ErrNoLogicalVolume) {
+	_, err = new(udf.Udf).LogicalVolumeIdentifier()
+	if !errors.Is(err, udf.ErrNoLogicalVolume) {
 		t.Errorf("missing logical descriptor: %v", err)
 	}
 
@@ -233,7 +235,8 @@ func TestVolumeIdentifierErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := volume.VolumeIdentifier(); !errors.Is(err, udf.ErrInvalidDStringLength) {
+	_, err = volume.VolumeIdentifier()
+	if !errors.Is(err, udf.ErrInvalidDStringLength) {
 		t.Errorf("expected invalid primary d-string length: %v", err)
 	}
 }
