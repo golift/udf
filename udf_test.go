@@ -178,15 +178,69 @@ func TestVolumeIdentifiers(t *testing.T) {
 		logicalErr  error
 	}{
 		{name: "empty"},
-		{name: "8-bit", primary: []byte{8, 'D', 'V', 'D', 0xE9}, logical: []byte{8, 'M', 'O', 'V', 'I', 'E'}, wantPrimary: "DVDé", wantLogical: "MOVIE"},
-		{name: "16-bit", primary: []byte{16, 0x65, 0xe5, 0x67, 0x2c}, logical: []byte{16, 0xd8, 0x3d, 0xde, 0x80}, wantPrimary: "\u65E5\u672C", wantLogical: "🚀"},
-		{name: "literal replacement character", primary: []byte{16, 0xff, 0xfd}, logical: []byte{16, 0xff, 0xfd}, wantPrimary: "\uFFFD", wantLogical: "\uFFFD"},
-		{name: "unknown compression", primary: []byte{7, 'A'}, logical: []byte{7, 'A'}, primaryErr: udf.ErrUnsupportedDStringCompression, logicalErr: udf.ErrUnsupportedDStringCompression},
-		{name: "odd 16-bit string", primary: []byte{16, 0, 'A', 0}, logical: []byte{16, 0, 'A', 0}, primaryErr: udf.ErrOddDString16Length, logicalErr: udf.ErrOddDString16Length},
-		{name: "invalid surrogate", primary: []byte{16, 0xd8, 0x00}, logical: []byte{16, 0xd8, 0x00}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
-		{name: "unpaired low surrogate", primary: []byte{16, 0xdc, 0x00}, logical: []byte{16, 0xdc, 0x00}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
-		{name: "invalid surrogate successor", primary: []byte{16, 0xd8, 0x00, 0, 'A'}, logical: []byte{16, 0xd8, 0x00, 0, 'A'}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
-		{name: "low surrogate before high surrogate", primary: []byte{16, 0xdc, 0x00, 0xd8, 0x00}, logical: []byte{16, 0xdc, 0x00, 0xd8, 0x00}, primaryErr: udf.ErrInvalidSurrogatePair, logicalErr: udf.ErrInvalidSurrogatePair},
+		{
+			name:        "8-bit",
+			primary:     []byte{8, 'D', 'V', 'D', 0xE9},
+			logical:     []byte{8, 'M', 'O', 'V', 'I', 'E'},
+			wantPrimary: "DVDé",
+			wantLogical: "MOVIE",
+		},
+		{
+			name:        "16-bit",
+			primary:     []byte{16, 0x65, 0xe5, 0x67, 0x2c},
+			logical:     []byte{16, 0xd8, 0x3d, 0xde, 0x80},
+			wantPrimary: "\u65E5\u672C",
+			wantLogical: "🚀",
+		},
+		{
+			name:        "literal replacement character",
+			primary:     []byte{16, 0xff, 0xfd},
+			logical:     []byte{16, 0xff, 0xfd},
+			wantPrimary: "\uFFFD",
+			wantLogical: "\uFFFD",
+		},
+		{
+			name:       "unknown compression",
+			primary:    []byte{7, 'A'},
+			logical:    []byte{7, 'A'},
+			primaryErr: udf.ErrUnsupportedDStringCompression,
+			logicalErr: udf.ErrUnsupportedDStringCompression,
+		},
+		{
+			name:       "odd 16-bit string",
+			primary:    []byte{16, 0, 'A', 0},
+			logical:    []byte{16, 0, 'A', 0},
+			primaryErr: udf.ErrOddDString16Length,
+			logicalErr: udf.ErrOddDString16Length,
+		},
+		{
+			name:       "invalid surrogate",
+			primary:    []byte{16, 0xd8, 0x00},
+			logical:    []byte{16, 0xd8, 0x00},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+		{
+			name:       "unpaired low surrogate",
+			primary:    []byte{16, 0xdc, 0x00},
+			logical:    []byte{16, 0xdc, 0x00},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+		{
+			name:       "invalid surrogate successor",
+			primary:    []byte{16, 0xd8, 0x00, 0, 'A'},
+			logical:    []byte{16, 0xd8, 0x00, 0, 'A'},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
+		{
+			name:       "low surrogate before high surrogate",
+			primary:    []byte{16, 0xdc, 0x00, 0xd8, 0x00},
+			logical:    []byte{16, 0xdc, 0x00, 0xd8, 0x00},
+			primaryErr: udf.ErrInvalidSurrogatePair,
+			logicalErr: udf.ErrInvalidSurrogatePair,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
