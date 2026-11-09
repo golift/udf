@@ -166,6 +166,8 @@ func TestPartitionStartNoPartition(t *testing.T) {
 }
 
 func TestVolumeIdentifiers(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		primary     []byte
@@ -188,6 +190,8 @@ func TestVolumeIdentifiers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			image := buildPhysicalImage()
 			writeVolumeDString(image[vdsSector*sectorSize+24:vdsSector*sectorSize+56], tt.primary)
 			writeVolumeDString(image[(vdsSector+2)*sectorSize+84:(vdsSector+2)*sectorSize+212], tt.logical)
@@ -208,6 +212,8 @@ func TestVolumeIdentifiers(t *testing.T) {
 }
 
 func TestVolumeIdentifierErrors(t *testing.T) {
+	t.Parallel()
+
 	image := buildPhysicalImage()
 	binary.LittleEndian.PutUint16(image[vdsSector*sectorSize:], 0)
 	volume, err := udf.NewUdfFromReader(bytes.NewReader(image))
