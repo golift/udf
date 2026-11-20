@@ -25,6 +25,59 @@ func TestTimestamp(t *testing.T) {
 	}
 }
 
+func TestTimestampTimeZone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  uint16
+		off  int
+		loc  *time.Location
+	}{
+		{name: "utc plus 330", typ: 1, off: 330, loc: time.FixedZone("", 330*60)},
+		{name: "utc minus 60", typ: 1, off: -60, loc: time.FixedZone("", -60*60)},
+		{name: "unspecified offset", typ: 1, off: -2047, loc: time.UTC},
+		{name: "type 0", typ: 0, off: 330, loc: time.UTC},
+		{name: "offset too large", typ: 1, off: 1441, loc: time.UTC},
+		{name: "offset too small", typ: 1, off: -1441, loc: time.UTC},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts := rTimestamp(timestampBytes(test.typ, test.off))
+			want := time.Date(2024, 3, 15, 10, 30, 45, 0, test.loc)
+
+			if !ts.Equal(want) {
+				t.Errorf("rTimestamp = %v, want %v", ts, want)
+			}
+
+			_, gotOff := ts.Zone()
+			_, wantOff := want.Zone()
+
+			if gotOff != wantOff {
+				t.Errorf("zone offset = %d, want %d", gotOff, wantOff)
+			}
+		})
+	}
+}
+
+// timestampBytes builds a 12-byte ECMA-167 timestamp. typ is the 4-bit type
+// and off is the signed offset from UTC in minutes, stored in 12 bits.
+func timestampBytes(typ uint16, off int) []byte {
+	buf := make([]byte, 12)
+	binary.LittleEndian.PutUint16(buf, (typ<<12)|(uint16(off)&0x0FFF))
+	binary.LittleEndian.PutUint16(buf[2:], 2024)
+	buf[4] = 3
+	buf[5] = 15
+	buf[6] = 10
+	buf[7] = 30
+	buf[8] = 45
+
+	return buf
+}
+
 func TestTimestampTooShort(t *testing.T) {
 	t.Parallel()
 

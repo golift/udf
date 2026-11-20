@@ -123,9 +123,22 @@ func rDcharacters(b []byte) string {
 	}
 }
 
+// rTimestamp reads an ECMA-167 timestamp. The first two bytes hold a 4-bit
+// type and a 12-bit signed offset from UTC in minutes. Type 1 with an offset
+// inside ±1440 minutes is local time in that zone. Type 0, an unspecified
+// offset (-2047), and anything outside that range are UTC. The Linux kernel
+// and 7-Zip use the same rule. Sub-second fields are ignored.
 func rTimestamp(b []byte) time.Time {
 	if len(b) < 12 {
 		return time.Time{}
+	}
+
+	tz := rlU16(b)
+	loc := time.UTC
+
+	// Sign-extend the 12-bit offset: shift it into the high bits, then back.
+	if off := int(int16(tz<<4) >> 4); tz>>12 == 1 && off >= -1440 && off <= 1440 {
+		loc = time.FixedZone("", off*60)
 	}
 
 	year := int(rlU16(b[2:]))
@@ -136,5 +149,5 @@ func rTimestamp(b []byte) time.Time {
 	second := int(b[8])
 
 	// UDF timestamps store absolute year, month, day.
-	return time.Date(year, month, day, hour, minute, second, 0, time.UTC)
+	return time.Date(year, month, day, hour, minute, second, 0, loc)
 }
