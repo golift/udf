@@ -41,13 +41,13 @@ func rDstring(b []byte, fieldlen int) string {
 }
 
 func decodeVolumeIdentifier(field []byte) (string, error) {
-	length := int(field[len(field)-1])
+	// The last byte counts the compression ID and the characters. Some discs
+	// record a label too long for the field: the characters are cut to fit,
+	// and the length still counts all of them. Read what the field holds, as
+	// the Linux kernel and libblkid do.
+	length := min(int(field[len(field)-1]), len(field)-1)
 	if length == 0 {
 		return "", nil
-	}
-
-	if length >= len(field) {
-		return "", fmt.Errorf("d-string length %d: %w", length, ErrInvalidDStringLength)
 	}
 
 	data := field[1:length]

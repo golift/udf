@@ -169,10 +169,16 @@ func TestPartitionStartNoPartition(t *testing.T) {
 func TestVolumeIdentifiers(t *testing.T) {
 	t.Parallel()
 
+	// A 32-character label. The primary field has room for 30 of them.
+	const longLabel = "THIRTY_TWO_CHARACTER_LABEL_DISC1"
+
+	// primaryLen and logicalLen, when not zero, are recorded in place of the true length.
 	tests := []struct {
 		name        string
 		primary     []byte
 		logical     []byte
+		primaryLen  byte
+		logicalLen  byte
 		wantPrimary string
 		wantLogical string
 		primaryErr  error
@@ -199,6 +205,34 @@ func TestVolumeIdentifiers(t *testing.T) {
 			logical:     []byte{16, 0xff, 0xfd},
 			wantPrimary: "\uFFFD",
 			wantLogical: "\uFFFD",
+		},
+		{
+			// Seen on a DVD mastered by Sonic Scenarist 3.1: the primary field
+			// holds the 30 characters that fit, and a length that counts all 32.
+			name:        "length past the field",
+			primary:     []byte("\x08" + longLabel[:30]),
+			primaryLen:  33,
+			logical:     []byte("\x08" + longLabel),
+			wantPrimary: longLabel[:30],
+			wantLogical: longLabel,
+		},
+		{
+			name:        "length equal to the field size",
+			primary:     []byte("\x08" + longLabel[:30]),
+			primaryLen:  32,
+			logical:     append([]byte{8}, bytes.Repeat([]byte{'L'}, 126)...),
+			logicalLen:  128,
+			wantPrimary: longLabel[:30],
+			wantLogical: strings.Repeat("L", 126),
+		},
+		{
+			name:        "16-bit length past the field",
+			primary:     append([]byte{16}, bytes.Repeat([]byte{0, 0xe9}, 15)...),
+			primaryLen:  65,
+			logical:     append([]byte{16}, bytes.Repeat([]byte{0, 0xe9}, 63)...),
+			logicalLen:  255,
+			wantPrimary: strings.Repeat("é", 15),
+			wantLogical: strings.Repeat("é", 63),
 		},
 		{
 			name:       "unknown compression",
@@ -248,8 +282,8 @@ func TestVolumeIdentifiers(t *testing.T) {
 			t.Parallel()
 
 			image := buildPhysicalImage()
-			writeVolumeDString(image[vdsSector*sectorSize+24:vdsSector*sectorSize+56], tt.primary)
-			writeVolumeDString(image[(vdsSector+2)*sectorSize+84:(vdsSector+2)*sectorSize+212], tt.logical)
+			writeVolumeDString(image[vdsSector*sectorSize+24:vdsSector*sectorSize+56], tt.primary, tt.primaryLen)
+			writeVolumeDString(image[(vdsSector+2)*sectorSize+84:(vdsSector+2)*sectorSize+212], tt.logical, tt.logicalLen)
 
 			volume, err := udf.NewUdfFromReader(bytes.NewReader(image))
 			if err != nil {
@@ -289,23 +323,17 @@ func TestVolumeIdentifierErrors(t *testing.T) {
 	if !errors.Is(err, udf.ErrNoLogicalVolume) {
 		t.Errorf("missing logical descriptor: %v", err)
 	}
-
-	image = buildPhysicalImage()
-	image[vdsSector*sectorSize+55] = 32
-
-	volume, err = udf.NewUdfFromReader(bytes.NewReader(image))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = volume.VolumeIdentifier()
-	if !errors.Is(err, udf.ErrInvalidDStringLength) {
-		t.Errorf("expected invalid primary d-string length: %v", err)
-	}
 }
 
-func writeVolumeDString(field, encoded []byte) {
+// writeVolumeDString records encoded in a d-string field. A zero length
+// records the length of encoded, as a correct writer does.
+func writeVolumeDString(field, encoded []byte, length byte) {
 	clear(field)
 	copy(field, encoded)
-	field[len(field)-1] = byte(len(encoded))
+
+	if length == 0 {
+		length = byte(len(encoded))
+	}
+
+	field[len(field)-1] = length
 }

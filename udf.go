@@ -40,7 +40,6 @@ var (
 	ErrBadAnchorTag                  = errors.New("unexpected anchor volume pointer tag")
 	ErrShortRead                     = errors.New("short read")
 	ErrUnsupportedPartition          = errors.New("unsupported UDF partition map")
-	ErrInvalidDStringLength          = errors.New("invalid d-string length")
 	ErrUnsupportedDStringCompression = errors.New("unsupported d-string compression ID")
 	ErrOddDString16Length            = errors.New("odd-length 16-bit d-string")
 	ErrInvalidSurrogatePair          = errors.New("invalid UTF-16 surrogate pair")
@@ -85,7 +84,9 @@ func (u *Udf) PartitionStart() (uint64, error) {
 }
 
 // VolumeIdentifier returns the decoded primary volume identifier.
-// An empty identifier is returned as an empty string.
+// An empty identifier is returned as an empty string. A recorded length
+// longer than the field is read as the whole field, so a label that was cut
+// to fit is returned as far as it was recorded.
 func (u *Udf) VolumeIdentifier() (string, error) {
 	if u.pvd == nil {
 		return "", ErrNoPrimaryVolume
@@ -102,7 +103,8 @@ func (u *Udf) VolumeIdentifier() (string, error) {
 }
 
 // LogicalVolumeIdentifier returns the decoded logical volume identifier.
-// An empty identifier is returned as an empty string.
+// An empty identifier is returned as an empty string. A recorded length
+// longer than the field is read as the whole field, as VolumeIdentifier does.
 func (u *Udf) LogicalVolumeIdentifier() (string, error) {
 	if u.lvd == nil {
 		return "", ErrNoLogicalVolume
