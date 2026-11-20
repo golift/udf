@@ -36,6 +36,8 @@ func TestTimestampTimeZone(t *testing.T) {
 	}{
 		{name: "utc plus 330", typ: 1, off: 330, loc: time.FixedZone("", 330*60)},
 		{name: "utc minus 60", typ: 1, off: -60, loc: time.FixedZone("", -60*60)},
+		{name: "offset exactly plus 1440", typ: 1, off: 1440, loc: time.FixedZone("", 1440*60)},
+		{name: "offset exactly minus 1440", typ: 1, off: -1440, loc: time.FixedZone("", -1440*60)},
 		{name: "unspecified offset", typ: 1, off: -2047, loc: time.UTC},
 		{name: "type 0", typ: 0, off: 330, loc: time.UTC},
 		{name: "offset too large", typ: 1, off: 1441, loc: time.UTC},

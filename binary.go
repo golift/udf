@@ -125,9 +125,10 @@ func rDcharacters(b []byte) string {
 
 // rTimestamp reads an ECMA-167 timestamp. The first two bytes hold a 4-bit
 // type and a 12-bit signed offset from UTC in minutes. Type 1 with an offset
-// inside ±1440 minutes is local time in that zone. Type 0, an unspecified
-// offset (-2047), and anything outside that range are UTC. The Linux kernel
-// and 7-Zip use the same rule. Sub-second fields are ignored.
+// inside ±1440 minutes is local time in that zone. Type 0, types 2, 3, and F,
+// an unspecified offset (-2047), and anything outside ±1440 minutes are UTC.
+// 7-Zip uses the same rule. The Linux kernel does too, except it does not
+// range-check the offset. Sub-second fields are ignored.
 func rTimestamp(b []byte) time.Time {
 	if len(b) < 12 {
 		return time.Time{}
